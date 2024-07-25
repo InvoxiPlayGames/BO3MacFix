@@ -267,9 +267,9 @@ __attribute__((constructor)) static void dylib_main() {
 
     // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
     // commented out until it's safe and functional
-    uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
-    memset(curl_nops, 0x90, sizeof(curl_nops));
-    DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
+    //uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
+    //memset(curl_nops, 0x90, sizeof(curl_nops));
+    //DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
 
     // set the network password rather than having it be 0 - should probably have a gui to set it
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
@@ -277,5 +277,5 @@ __attribute__((constructor)) static void dylib_main() {
         network_password = gscu_canon_hash64(password_text);
 
     // patches the network version to match Windows, need to make the protocol identical
-    network_version_patch();
+    //network_version_patch();
 }
