@@ -1,3 +1,4 @@
+#include <string.h>
 #include <Foundation/Foundation.h>
 
 int main(int argc, char **argv) {
@@ -20,6 +21,10 @@ int main(int argc, char **argv) {
     }
     newEnvironment[@"WINEPREFIX"] = [[gameProc.currentDirectoryURL URLByAppendingPathComponent:@"../../../BO3MacFix/pfx"] path];
     newEnvironment[@"SteamAppId"] = @"311210";
+    // check if we have a password in the args
+    if (argc >= 3 && strcmp("--password", argv[1]) == 0) {
+        newEnvironment[@"BO3MACFIX_NETWORKPASSWORD"] = [NSString stringWithUTF8String:argv[2]];
+    }
     gameProc.environment = newEnvironment;
     
     // launch the game executable

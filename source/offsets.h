@@ -27,4 +27,5 @@
 #define ADDR_Scr_ErrorInternalPatch 0x11a238e // mid-func
 #define ADDR_Curl_ContentLengthSetStart 0x159345c // mid-func
 #define ADDR_Curl_ContentLengthSetEnd 0x159346f // mid-func
+#define ADDR_Lua_CoD_LuaCall_GetProtocolVersion_Inst 0xE1FCA8 // mid-func
 // -- END OFFSETS

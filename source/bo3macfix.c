@@ -61,6 +61,8 @@ static void *(*DB_FindXAssetHeader)(int type, char *name, bool errorIfMissing, i
 static void (*Dvar_SetFromStringByName)(const char *dvarName, const char *string, bool createIfMissing);
 static void (*Com_Error)(char *file, int line, int code, char *fmt, ...);
 static uint16_t (*Sys_Checksum)(uint8_t *payload, int paylen);
+static uint8_t (*MSG_ReadByte)(void *msg);
+static void (*MSG_WriteByte)(void *msg, uint8_t c);
 
 // Makes sure incoming checksums have our password
 install_hook_name(Sys_VerifyPacketChecksum, int, uint8_t *payload, int paylen) {
@@ -80,6 +82,26 @@ install_hook_name(Sys_CheckSumPacketCopy, uint16_t, uint8_t *dest, uint8_t *payl
     uint16_t ret = orig_Sys_CheckSumPacketCopy(dest, payload, paylen);
     ret ^= (uint16_t)network_password;
     return ret;
+}
+
+// Adds password into lobby messages
+install_hook_name(LobbyMsgRW_PrepReadMsg, bool, void *msg) {
+    bool orig = orig_LobbyMsgRW_PrepReadMsg(msg);
+    if (orig && network_password != 0) {
+        if (MSG_ReadByte(msg) == (uint8_t)(network_password & 0xFF0000 >> 16) &&
+            MSG_ReadByte(msg) == (uint8_t)(network_password & 0xFF000000 >> 24))
+            return true;
+        return false;
+    }
+    return orig;
+}
+install_hook_name(LobbyMsgRW_PrepWriteMsg, bool, void *lobbyMsg, uint8_t *data, int length, int msgType) {
+    bool orig = orig_LobbyMsgRW_PrepWriteMsg(lobbyMsg, data, length, msgType);
+    if (orig && network_password != 0) {
+        MSG_WriteByte(lobbyMsg, (uint8_t)(network_password & 0xFF0000 >> 16));
+        MSG_WriteByte(lobbyMsg, (uint8_t)(network_password & 0xFF000000 >> 24));
+    }
+    return orig;
 }
 
 // Aspyr's png to texture conversion code is buggy and always crashes.
@@ -209,7 +231,7 @@ static void network_version_patch() {
     int num_addrs = sizeof(addresses) / sizeof(addresses[0]);
     // enumerate through every one of these instances
     for (int i = 0; i < num_addrs; i++) {
-        // find the offset of the
+        // find the offset of the old number in the mov instruction
         int o = 0;
         bool found = false;
         for (o = 0; o < 16; o++)  {
@@ -224,8 +246,9 @@ static void network_version_patch() {
             printf("failed to find network patch for %08x\n", addresses[i]);
         }
     }
+    // patch the version reported by Lua_CoD_LuaCall_GetProtocolVersion
     uint32_t new_lua_version = 0x4690C800;
-    DobbyCodePatch((void *)(game_base_address + 0xE1FCA8 + 3), (uint8_t *)&new_lua_version, sizeof(uint32_t));
+    DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CoD_LuaCall_GetProtocolVersion_Inst + 3), (uint8_t *)&new_lua_version, sizeof(uint32_t));
 }
 
 // Entrypoint for the dylib
@@ -249,6 +272,8 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_someWindowCreationFunction((void *)(game_base_address + ADDR_someWindowCreationFunction));
     install_hook_Sys_VerifyPacketChecksum((void *)(game_base_address + ADDR_Sys_VerifyPacketChecksum));
     install_hook_Sys_CheckSumPacketCopy((void *)(game_base_address + ADDR_Sys_CheckSumPacketCopy));
+    install_hook_LobbyMsgRW_PrepReadMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepReadMsg));
+    install_hook_LobbyMsgRW_PrepWriteMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepWriteMsg));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
@@ -256,6 +281,8 @@ __attribute__((constructor)) static void dylib_main() {
     Com_Error = (void *)(game_base_address + ADDR_Com_Error);
     Dvar_SetFromStringByName = (void *)(game_base_address + ADDR_Dvar_SetFromStringByName);
     Sys_Checksum = (void *)(game_base_address + ADDR_Sys_Checksum);
+    MSG_ReadByte = (void *)(game_base_address + ADDR_MSG_ReadByte);
+    MSG_WriteByte = (void *)(game_base_address + ADDR_MSG_WriteByte);
 
     // disable setting a fatal error in Scr_ErrorInternal, Aspyr forces it to always be true
     uint8_t error_patch[1] = { 0x00 };
@@ -265,16 +292,16 @@ __attribute__((constructor)) static void dylib_main() {
     uint8_t ret[1] = { 0x3C };
     DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CmdParseArgs), ret, sizeof(ret));
 
-    // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
-    // commented out until it's safe and functional
-    //uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
-    //memset(curl_nops, 0x90, sizeof(curl_nops));
-    //DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
-
     // set the network password rather than having it be 0 - should probably have a gui to set it
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
-    if (password_text != NULL)
+    if (password_text != NULL) {
         network_password = gscu_canon_hash64(password_text);
+
+        // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
+        uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
+        memset(curl_nops, 0x90, sizeof(curl_nops));
+        DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
+    }
 
     // patches the network version to match Windows, need to make the protocol identical
     //network_version_patch();
