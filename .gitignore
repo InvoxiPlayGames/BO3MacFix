@@ -1,0 +1,10 @@
+.DS_Store
+*.dSYM
+assets
+scripts
+AppBundleExe
+*.dylib
+*.exe
+*.dll
+*.clump
+*.bin
