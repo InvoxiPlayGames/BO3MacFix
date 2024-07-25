@@ -16,7 +16,7 @@ LDFLAGS = -shared -Wl,-undefined -Wl,dynamic_lookup -Llib -ldobby
 
 FRAMEWORKS = -framework CoreFoundation
 
-SOURCES = source/bo3macfix.c
+SOURCES = source/bo3macfix.c source/bo3macnative.m
 
 all: $(TARGET)
 

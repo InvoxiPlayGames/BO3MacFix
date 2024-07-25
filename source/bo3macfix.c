@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <sys/types.h>
@@ -11,18 +12,32 @@
 
 #include "dobby.h"
 
-// Mac v1.0.0.0, in-game v98, executable 5e42371b6a16f2b11e637f48e38554625570aa9f
+// -- START OFFSETS [Mac v1.0.0.0, in-game v98, executable 5e42371b6a16f2b11e637f48e38554625570aa9f]
+// functions
 #define ADDR_HKAI_InitMapData 0xe09aa9 // func
-#define ADDR_load_workshop_texture 0xe4a26c // func
-#define ADDR_build_usermods_path 0xe49938 // func
+#define ADDR_load_workshop_texture 0xe4a26c // func - name is a guess
+#define ADDR_build_usermods_path 0xe49938 // func - name is a guess
 #define ADDR_DB_FindXAssetHeader 0x1345b12 // func
 #define ADDR_Com_Error 0xe71e51 // func
 #define ADDR_Live_SystemInfo 0x129d650 // func
 #define ADDR_Dvar_SetFromStringByName 0xfa3386 // func
-#define ADDR_g_workshopMapId 0x3087dac // char[]
-#define ADDR_g_emuPath 0x4ae9c00 // char[]
+#define ADDR_someLoggingFunction 0xe70f88 // func - name is a guess
+#define ADDR_someWindowCreationFunction 0x1143ca // func - name is a guess
+#define ADDR_Sys_Checksum 0x14025dd // func
+#define ADDR_Sys_VerifyPacketChecksum 0x140258f // func
+#define ADDR_Sys_CheckSumPacketCopy 0x1402648 // func
+#define ADDR_Lua_CmdParseArgs 0x1408cf9 // func
+
+//globals
+#define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess
+#define ADDR_g_emuPath 0x4ae9c00 // char[] - name is a guess
 #define ADDR_sSessionModeState 0x6939a14 // int
+
+//function patches
 #define ADDR_Scr_ErrorInternalPatch 0x11a238e // mid-func
+#define ADDR_Curl_ContentLengthSetStart 0x159345c // mid-func
+#define ADDR_Curl_ContentLengthSetEnd 0x159346f // mid-func
+// -- END OFFSETS
 
 #define Version_Prefix "[BO3MacFix v1.0]"
 #define Error_Prefix "^7[^6BO3MacFix^7] "
@@ -144,6 +159,22 @@ install_hook_name(load_workshop_texture, void *, const char *path) {
     return NULL;
 }
 
+// Prints out logs to stdout that would normally go in the logging window
+install_hook_name(someLoggingFunction, void, int bla, int bla2, char *str, int bla3) {
+    printf("%s", str);
+    orig_someLoggingFunction(bla, bla2, str, bla3);
+    return;
+}
+
+void set_window_title(const char *title); // bo3macnative.m
+// Hooks some early window creation function to set the window title to ours
+install_hook_name(someWindowCreationFunction, bool, void *r3, int r4) {
+    bool r = orig_someWindowCreationFunction(r3, r4);
+    set_window_title("Call of Duty: Black Ops III (with BO3MacFix)");
+    return r;
+}
+
+// Adds the version of our mod to the version info in the corner
 install_hook_name(Live_SystemInfo, bool, int controllerIndex, int info, char *outputString, int outputLen) {
     bool r = orig_Live_SystemInfo(controllerIndex, info, outputString, outputLen);
     if (info == 0 && r == true) {
@@ -252,6 +283,8 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_HKAI_InitMapData((void *)(game_base_address + ADDR_HKAI_InitMapData));
     install_hook_load_workshop_texture((void *)(game_base_address + ADDR_load_workshop_texture));
     install_hook_Live_SystemInfo((void *)(game_base_address + ADDR_Live_SystemInfo));
+    install_hook_someLoggingFunction((void *)(game_base_address + ADDR_someLoggingFunction));
+    install_hook_someWindowCreationFunction((void *)(game_base_address + ADDR_someWindowCreationFunction));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
@@ -260,6 +293,16 @@ __attribute__((constructor)) static void dylib_main() {
     Dvar_SetFromStringByName = (void *)(game_base_address + ADDR_Dvar_SetFromStringByName);
 
     // disable setting a fatal error in Scr_ErrorInternal, Aspyr forces it to always be true
-    uint8_t patch[1] = { 0x00 };
-    DobbyCodePatch((void *)(game_base_address + ADDR_Scr_ErrorInternalPatch + 4), patch, 1);
+    uint8_t error_patch[1] = { 0x00 };
+    DobbyCodePatch((void *)(game_base_address + ADDR_Scr_ErrorInternalPatch + 4), error_patch, 1);
+
+    // fix a crash bug
+    uint8_t ret[1] = { 0x3C };
+    DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CmdParseArgs), ret, sizeof(ret));
+
+    // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
+    // commented out until it's safe :) (needs network password, friends whitelist)
+    //uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
+    //memset(curl_nops, 0x90, sizeof(curl_nops));
+    //DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
 }
