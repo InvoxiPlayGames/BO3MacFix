@@ -4,40 +4,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
 
+#include "bo3macnative.h"
+#include "codhavoktypes.h"
 #include "dobby.h"
-
-// -- START OFFSETS [Mac v1.0.0.0, in-game v98, executable 5e42371b6a16f2b11e637f48e38554625570aa9f]
-// functions
-#define ADDR_HKAI_InitMapData 0xe09aa9 // func
-#define ADDR_load_workshop_texture 0xe4a26c // func - name is a guess
-#define ADDR_build_usermods_path 0xe49938 // func - name is a guess
-#define ADDR_DB_FindXAssetHeader 0x1345b12 // func
-#define ADDR_Com_Error 0xe71e51 // func
-#define ADDR_Live_SystemInfo 0x129d650 // func
-#define ADDR_Dvar_SetFromStringByName 0xfa3386 // func
-#define ADDR_someLoggingFunction 0xe70f88 // func - name is a guess
-#define ADDR_someWindowCreationFunction 0x1143ca // func - name is a guess
-#define ADDR_Sys_Checksum 0x14025dd // func
-#define ADDR_Sys_VerifyPacketChecksum 0x140258f // func
-#define ADDR_Sys_CheckSumPacketCopy 0x1402648 // func
-#define ADDR_Lua_CmdParseArgs 0x1408cf9 // func
-
-//globals
-#define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess
-#define ADDR_g_emuPath 0x4ae9c00 // char[] - name is a guess
-#define ADDR_sSessionModeState 0x6939a14 // int
-
-//function patches
-#define ADDR_Scr_ErrorInternalPatch 0x11a238e // mid-func
-#define ADDR_Curl_ContentLengthSetStart 0x159345c // mid-func
-#define ADDR_Curl_ContentLengthSetEnd 0x159346f // mid-func
-// -- END OFFSETS
+#include "utilities.h"
+#include "offsets.h"
 
 #define Version_Prefix "[BO3MacFix v1.0]"
 #define Error_Prefix "^7[^6BO3MacFix^7] "
@@ -48,35 +26,6 @@
 #define Wine_Path_ASi "/opt/homebrew/bin/wine"
 #define Wine_Path_Intel "/usr/local/bin/wine"
 
-#define ASSET_TYPE_NAVMESH 0x61
-#define ASSET_TYPE_NAVVOLUME 0x62
-typedef struct _NavMeshData {
-    char *name;
-    int navMeshSettingsBufferSize;
-    uint8_t *navMeshSettingsBuffer;
-    int userEdgePairsBufferSize;
-    uint8_t *userEdgePairsBuffer;
-    int clusterGraphBufferSize;
-    uint8_t *clusterGraphBuffer;
-    int mediatorBufferSize;
-    uint8_t *mediatorBuffer;
-    int metadataBufferSize;
-    uint8_t *metadataBuffer;
-    int clearanceCacheSeederBufferSize;
-    uint8_t *clearanceCacheSeederBuffer;
-} NavMeshData;
-typedef struct _NavVolumeData {
-    char *name;
-    int smallNavVolumeSettingsBufferSize;
-    uint8_t *smallNavVolumeSettingsBuffer;
-    int smallNavVolumeMediatorBufferSize;
-    uint8_t *smallNavVolumeMediatorBuffer;
-    int bigNavVolumeSettingsBufferSize;
-    uint8_t *bigNavVolumeSettingsBuffer;
-    int bigNavVolumeMediatorBufferSize;
-    uint8_t *bigNavVolumeMediatorBuffer;
-} NavVolumeData;
-
 typedef struct _SESSIONMODE_STATE {
     int32_t mode : 4;
     int32_t campaignMode : 2;
@@ -86,27 +35,12 @@ typedef struct _SESSIONMODE_STATE {
     int32_t viewport : 4;
 } SESSIONMODE_STATE;
 
-typedef struct _clumpheader {
-    int bool_hasNavVolume; // 0x0
-
-    int navMeshSettingsBufferSize; // 0x4
-    int userEdgePairsBufferSize; // 0x8
-    int clusterGraphBufferSize; // 0xC
-    int mediatorBufferSize; // 0x10
-    int metadataBufferSize; // 0x14
-    int clearanceCacheSeederBufferSize; // 0x18
-
-    int smallNavVolumeSettingsBufferSize; // 0x1C
-    int smallNavVolumeMediatorBufferSize; // 0x20
-    int bigNavVolumeSettingsBufferSize; // 0x24
-    int bigNavVolumeMediatorBufferSize; // 0x28
-
-    int unused; // 0x2C
-} clumpheader;
-
 // The base address of the CoDBlkOps3_Exe executable
 uint64_t game_base_address = 0x0;
+// The hashed network password used for network encryption.
+uint64_t network_password = 0;
 
+// Returns the current gamemode string as used in paths
 static const char *GetGamemodeString() {
     SESSIONMODE_STATE modeState = *(SESSIONMODE_STATE *)(game_base_address + ADDR_sSessionModeState);
     switch (modeState.mode) {
@@ -121,37 +55,32 @@ static const char *GetGamemodeString() {
     }
 }
 
-// Gets the base address of the first loaded dyld image (the game binary)
-static inline uint64_t get_base_address() {
-    // getsegbyname is deprecated since 13.0, is there an alternative?
-    const struct segment_command_64* segment = getsegbyname("__TEXT");
-    intptr_t slide = _dyld_get_image_vmaddr_slide(0);
-    return segment->vmaddr + slide;
-}
-
-// Gets just the filename of a given path
-static const char *filename_from_path(const char *path) {
-    size_t len = strlen(path);
-    for (size_t i = len - 1; i > 0; i--) {
-        if (path[i] == '/')
-            return path + i + 1;
-    }
-    return path;
-}
-
-// Detects if the process is running under Rosetta2 or not (find out if we're on ASi or Intel)
-bool rosetta_translated_process() {
-    int ret = 0;
-    size_t size = sizeof(ret);
-    if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1)
-        return false;
-    return ret;
-}
-
+// game functions we call upon
 static void(*build_usermods_path)(const char *filename, const char *extension, size_t out_size, char *out_path, int type_maybe, char *workshop_id);
 static void *(*DB_FindXAssetHeader)(int type, char *name, bool errorIfMissing, int waitTime);
 static void (*Dvar_SetFromStringByName)(const char *dvarName, const char *string, bool createIfMissing);
 static void (*Com_Error)(char *file, int line, int code, char *fmt, ...);
+static uint16_t (*Sys_Checksum)(uint8_t *payload, int paylen);
+
+// Makes sure incoming checksums have our password
+install_hook_name(Sys_VerifyPacketChecksum, int, uint8_t *payload, int paylen) {
+    if (paylen >= 2) {
+        int newlen = paylen - 2;
+        uint16_t payload_checksum = *(uint16_t *)(payload + newlen);
+        uint16_t expected_checksum = (uint16_t)network_password ^ Sys_Checksum(payload, newlen);
+        if (payload_checksum == expected_checksum)
+            return newlen;
+        printf("Mismatched packet checksum! (%04x != %04x)\n", payload_checksum, expected_checksum);
+    }
+    return -1;
+}
+
+// Adds our password onto checksums
+install_hook_name(Sys_CheckSumPacketCopy, uint16_t, uint8_t *dest, uint8_t *payload, int paylen) {
+    uint16_t ret = orig_Sys_CheckSumPacketCopy(dest, payload, paylen);
+    ret ^= (uint16_t)network_password;
+    return ret;
+}
 
 // Aspyr's png to texture conversion code is buggy and always crashes.
 // Return no texture so we don't crash upon load.
@@ -166,7 +95,6 @@ install_hook_name(someLoggingFunction, void, int bla, int bla2, char *str, int b
     return;
 }
 
-void set_window_title(const char *title); // bo3macnative.m
 // Hooks some early window creation function to set the window title to ours
 install_hook_name(someWindowCreationFunction, bool, void *r3, int r4) {
     bool r = orig_someWindowCreationFunction(r3, r4);
@@ -266,6 +194,40 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     orig_HKAI_InitMapData(mapname, restart);
 }
 
+// patches all instance of the old network version with the new network version
+static void network_version_patch() {
+    uint16_t original_network_version = 18530;
+    uint16_t patched_network_version = 18532;
+    // all the places the original network version is hardcoded
+    uint32_t addresses[] = {
+        0x00E078E4, 0x00E181D3, 0x00E83E4E, 0x00EB8389, 0x00EB91A9,
+        0x00F988A0, 0x0104E0CB, 0x0105973D, 0x01059844, 0x0105C368,
+        0x0105C5DC, 0x011F7C3E, 0x011F7C43, 0x011F7C49, 0x0120B547,
+        0x0120B56A, 0x0123244C, 0x0126F78C, 0x0126F897, 0x0126F8BC,
+        0x0126F90D, 0x0126F96F, 0x012D35DA, 0x013B5C1D, 
+    };
+    int num_addrs = sizeof(addresses) / sizeof(addresses[0]);
+    // enumerate through every one of these instances
+    for (int i = 0; i < num_addrs; i++) {
+        // find the offset of the
+        int o = 0;
+        bool found = false;
+        for (o = 0; o < 16; o++)  {
+            if (memcmp((void *)(game_base_address + addresses[i] + o), &original_network_version, sizeof(uint16_t)) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found == true) {
+            DobbyCodePatch((void *)(game_base_address + addresses[i] + o), (uint8_t *)&patched_network_version, sizeof(uint16_t));
+        } else {
+            printf("failed to find network patch for %08x\n", addresses[i]);
+        }
+    }
+    uint32_t new_lua_version = 0x4690C800;
+    DobbyCodePatch((void *)(game_base_address + 0xE1FCA8 + 3), (uint8_t *)&new_lua_version, sizeof(uint32_t));
+}
+
 // Entrypoint for the dylib
 __attribute__((constructor)) static void dylib_main() {
     // make sure we're loading into the game process and nothing else
@@ -285,12 +247,15 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_Live_SystemInfo((void *)(game_base_address + ADDR_Live_SystemInfo));
     install_hook_someLoggingFunction((void *)(game_base_address + ADDR_someLoggingFunction));
     install_hook_someWindowCreationFunction((void *)(game_base_address + ADDR_someWindowCreationFunction));
+    install_hook_Sys_VerifyPacketChecksum((void *)(game_base_address + ADDR_Sys_VerifyPacketChecksum));
+    install_hook_Sys_CheckSumPacketCopy((void *)(game_base_address + ADDR_Sys_CheckSumPacketCopy));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
     DB_FindXAssetHeader = (void *)(game_base_address + ADDR_DB_FindXAssetHeader);
     Com_Error = (void *)(game_base_address + ADDR_Com_Error);
     Dvar_SetFromStringByName = (void *)(game_base_address + ADDR_Dvar_SetFromStringByName);
+    Sys_Checksum = (void *)(game_base_address + ADDR_Sys_Checksum);
 
     // disable setting a fatal error in Scr_ErrorInternal, Aspyr forces it to always be true
     uint8_t error_patch[1] = { 0x00 };
@@ -301,8 +266,16 @@ __attribute__((constructor)) static void dylib_main() {
     DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CmdParseArgs), ret, sizeof(ret));
 
     // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
-    // commented out until it's safe :) (needs network password, friends whitelist)
-    //uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
-    //memset(curl_nops, 0x90, sizeof(curl_nops));
-    //DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
+    // commented out until it's safe and functional
+    uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
+    memset(curl_nops, 0x90, sizeof(curl_nops));
+    DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
+
+    // set the network password rather than having it be 0 - should probably have a gui to set it
+    const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
+    if (password_text != NULL)
+        network_password = gscu_canon_hash64(password_text);
+
+    // patches the network version to match Windows, need to make the protocol identical
+    network_version_patch();
 }

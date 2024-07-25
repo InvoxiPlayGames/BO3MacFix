@@ -12,7 +12,7 @@ TODO. is not ready yet
 
 ## Credits
 
-- [Anthony / serious](https://github.com/shiversoftdev) - guidance, help and the cod2map64 patch DLL.
+- [Anthony / serious](https://github.com/shiversoftdev) - guidance, help, t7patch and the cod2map64 patch DLL.
 - [The Dobby project](https://github.com/jmpews/Dobby) - code hooking on macOS. (used under the MIT license)
 
 ## What does it do? (Nerd stuff)
