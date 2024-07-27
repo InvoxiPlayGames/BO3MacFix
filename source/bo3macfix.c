@@ -7,9 +7,11 @@
 #include <ctype.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
+#include "dyld-interposing.h"
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
+#include <sandbox.h>
 
 #include "bo3macnative.h"
 #include "codhavoktypes.h"
@@ -221,35 +223,73 @@ static void network_version_patch() {
     uint16_t original_network_version = 18530;
     uint16_t patched_network_version = 18532;
     // all the places the original network version is hardcoded
-    uint32_t addresses[] = {
+    uint32_t netver_addresses[] = {
         0x00E078E4, 0x00E181D3, 0x00E83E4E, 0x00EB8389, 0x00EB91A9,
         0x00F988A0, 0x0104E0CB, 0x0105973D, 0x01059844, 0x0105C368,
         0x0105C5DC, 0x011F7C3E, 0x011F7C43, 0x011F7C49, 0x0120B547,
         0x0120B56A, 0x0123244C, 0x0126F78C, 0x0126F897, 0x0126F8BC,
         0x0126F90D, 0x0126F96F, 0x012D35DA, 0x013B5C1D, 
     };
-    int num_addrs = sizeof(addresses) / sizeof(addresses[0]);
+    int num_netver_addrs = sizeof(netver_addresses) / sizeof(netver_addresses[0]);
     // enumerate through every one of these instances
-    for (int i = 0; i < num_addrs; i++) {
+    for (int i = 0; i < num_netver_addrs; i++) {
         // find the offset of the old number in the mov instruction
         int o = 0;
         bool found = false;
         for (o = 0; o < 16; o++)  {
-            if (memcmp((void *)(game_base_address + addresses[i] + o), &original_network_version, sizeof(uint16_t)) == 0) {
+            if (memcmp((void *)(game_base_address + netver_addresses[i] + o), &original_network_version, sizeof(uint16_t)) == 0) {
                 found = true;
                 break;
             }
         }
         if (found == true) {
-            DobbyCodePatch((void *)(game_base_address + addresses[i] + o), (uint8_t *)&patched_network_version, sizeof(uint16_t));
+            DobbyCodePatch((void *)(game_base_address + netver_addresses[i] + o), (uint8_t *)&patched_network_version, sizeof(uint16_t));
         } else {
-            printf("failed to find network patch for %08x\n", addresses[i]);
+            printf("failed to find network patch for %08x\n", netver_addresses[i]);
+        }
+    }
+    // patch the tu version used to get the ffotd
+    uint8_t original_tuver[] = "tu30";
+    uint8_t patched_tuver[] = "tu32";
+    uint32_t tuver_addresses[] = {
+        0x016AA513, 0x017251FB, 0x01725209, 0x0172529C, 0x017252AB,
+        0x017252B7, 
+    };
+    int num_tuver_addrs = sizeof(tuver_addresses) / sizeof(tuver_addresses[0]);
+    // enumerate through every one of these instances
+    for (int i = 0; i < num_tuver_addrs; i++) {
+        int o = 0;
+        bool found = false;
+        for (o = 0; o < 16; o++)  {
+            if (memcmp((void *)(game_base_address + tuver_addresses[i] + o), original_tuver, sizeof(original_tuver) - 1) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found == true) {
+            DobbyCodePatch((void *)(game_base_address + tuver_addresses[i] + o), patched_tuver, sizeof(patched_tuver) - 1);
+        } else {
+            printf("failed to find string patch for %08x\n", tuver_addresses[i]);
         }
     }
     // patch the version reported by Lua_CoD_LuaCall_GetProtocolVersion
     uint32_t new_lua_version = 0x4690C800;
     DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CoD_LuaCall_GetProtocolVersion_Inst + 3), (uint8_t *)&new_lua_version, sizeof(uint32_t));
+    // set the LPC category version to match PC
+    uint32_t newcategory = 0x0528;
+    DobbyCodePatch((void *)(game_base_address + ADDR_LPC_GetRemoteManifest_Category_Inst + 6), (uint8_t *)&newcategory, sizeof(uint32_t));
 }
+
+int system_new(const char *command) {
+    return -1;
+}
+FILE *popen_new(const char *command, const char *mode) {
+    return NULL;
+}
+DYLD_INTERPOSE(system_new, system);
+DYLD_INTERPOSE(popen_new, popen);
+
+int sandbox_init_with_parameters(const char *profile, uint64_t flags, const char *const parameters[], char **errorbuf);
 
 // Entrypoint for the dylib
 __attribute__((constructor)) static void dylib_main() {
@@ -289,12 +329,12 @@ __attribute__((constructor)) static void dylib_main() {
     DobbyCodePatch((void *)(game_base_address + ADDR_Scr_ErrorInternalPatch + 4), error_patch, 1);
 
     // fix a crash bug
-    uint8_t ret[1] = { 0x3C };
+    uint8_t ret[1] = { 0xC3 };
     DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CmdParseArgs), ret, sizeof(ret));
 
     // set the network password rather than having it be 0 - should probably have a gui to set it
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
-    if (password_text != NULL) {
+    if (password_text != NULL && strlen(password_text) >= 1) {
         network_password = gscu_canon_hash64(password_text);
 
         // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
@@ -303,6 +343,10 @@ __attribute__((constructor)) static void dylib_main() {
         DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
     }
 
-    // patches the network version to match Windows, need to make the protocol identical
-    //network_version_patch();
+    // patches the network version to match Windows
+    network_version_patch();
+
+    // i'll figure all that stuff out later :')
+    //int sbr = sandbox_init_with_parameters("(version 1)(allow default)(debug allow)", 0, NULL, NULL);
+    //printf("seatbelt init %i\n", sbr);
 }
