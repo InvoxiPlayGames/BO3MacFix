@@ -3,13 +3,14 @@ TARGET = BO3MacFix.dylib
 DEBUG   ?= 0
 ARCH    ?= x86_64
 SDK     ?= macosx
+OSXVER  ?= 10.13
 
 SYSROOT  := $(shell xcrun --sdk $(SDK) --show-sdk-path)
 ifeq ($(SYSROOT),)
 $(error Could not find SDK "$(SDK)")
 endif
 CLANG    := clang
-CC       := $(CLANG) -isysroot $(SYSROOT) -arch $(ARCH)
+CC       := $(CLANG) -isysroot $(SYSROOT) -arch $(ARCH) -mmacosx-version-min=$(OSXVER)
 
 CFLAGS  = -O1 -Wall -g -I include/ -I src/
 LDFLAGS = -shared -Wl,-undefined -Wl,dynamic_lookup -Llib -ldobby
