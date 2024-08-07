@@ -2,7 +2,9 @@
 *.dSYM
 assets
 scripts
+installer
 AppBundleExe
+Install_BO3MacFix
 *.dylib
 *.exe
 *.dll

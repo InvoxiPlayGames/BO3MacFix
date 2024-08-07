@@ -25,8 +25,9 @@
 // cod2map64 path relative to Assets folder in the .app bundle
 #define C2M_Path "../../../BO3MacFix/cod2map/cod2map64.exe"
 
-#define Wine_Path_ASi "/opt/homebrew/bin/wine"
-#define Wine_Path_Intel "/usr/local/bin/wine"
+#define Wine_Path_ASi "/opt/homebrew/bin/wine64"
+#define Wine_Path_Intel "/usr/local/bin/wine64"
+#define Wine_Path_AppFormat "\"/Applications/Wine %s.app/Contents/Resources/wine/bin/wine64\""
 
 typedef struct _SESSIONMODE_STATE {
     int32_t mode : 4;
@@ -64,7 +65,7 @@ static void (*Dvar_SetFromStringByName)(const char *dvarName, const char *string
 static void (*Com_Error)(char *file, int line, int code, char *fmt, ...);
 static uint16_t (*Sys_Checksum)(uint8_t *payload, int paylen);
 static uint8_t (*MSG_ReadByte)(void *msg);
-static void (*MSG_WriteByte)(void *msg, uint8_t c);
+static void (*MSG_WriteByte)(void *msg, int64_t c);
 
 // Makes sure incoming checksums have our password
 install_hook_name(Sys_VerifyPacketChecksum, int, uint8_t *payload, int paylen) {
@@ -86,13 +87,18 @@ install_hook_name(Sys_CheckSumPacketCopy, uint16_t, uint8_t *dest, uint8_t *payl
     return ret;
 }
 
+#define ZBR_PREFIX_BYTE (uint8_t)((network_password & 0xFF0000) >> 16)
+#define ZBR_PREFIX_BYTE2 (uint8_t)((network_password & 0xFF000000) >> 24)
+
 // Adds password into lobby messages
 install_hook_name(LobbyMsgRW_PrepReadMsg, bool, void *msg) {
     bool orig = orig_LobbyMsgRW_PrepReadMsg(msg);
-    if (orig && network_password != 0) {
-        if (MSG_ReadByte(msg) == (uint8_t)(network_password & 0xFF0000 >> 16) &&
-            MSG_ReadByte(msg) == (uint8_t)(network_password & 0xFF000000 >> 24))
+    if (orig && network_password != 0 && ZBR_PREFIX_BYTE != 0) {
+        uint8_t prefbyte1 = MSG_ReadByte(msg);
+        uint8_t prefbyte2 = MSG_ReadByte(msg);
+        if (!ZBR_PREFIX_BYTE || (((prefbyte1 == ZBR_PREFIX_BYTE) && (prefbyte2 == ZBR_PREFIX_BYTE2))))
             return true;
+        // printf("Failed prepreadmsg password (Got %02x %02x, expected %02x %02x)\n", prefbyte1, prefbyte2, ZBR_PREFIX_BYTE, ZBR_PREFIX_BYTE2);
         return false;
     }
     return orig;
@@ -100,8 +106,8 @@ install_hook_name(LobbyMsgRW_PrepReadMsg, bool, void *msg) {
 install_hook_name(LobbyMsgRW_PrepWriteMsg, bool, void *lobbyMsg, uint8_t *data, int length, int msgType) {
     bool orig = orig_LobbyMsgRW_PrepWriteMsg(lobbyMsg, data, length, msgType);
     if (orig && network_password != 0) {
-        MSG_WriteByte(lobbyMsg, (uint8_t)(network_password & 0xFF0000 >> 16));
-        MSG_WriteByte(lobbyMsg, (uint8_t)(network_password & 0xFF000000 >> 24));
+        MSG_WriteByte(lobbyMsg, ZBR_PREFIX_BYTE);
+        MSG_WriteByte(lobbyMsg, ZBR_PREFIX_BYTE2);
     }
     return orig;
 }
@@ -336,12 +342,12 @@ __attribute__((constructor)) static void dylib_main() {
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
     if (password_text != NULL && strlen(password_text) >= 1) {
         network_password = gscu_canon_hash64(password_text);
-
-        // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
-        uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
-        memset(curl_nops, 0x90, sizeof(curl_nops));
-        DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
     }
+
+    // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
+    uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
+    memset(curl_nops, 0x90, sizeof(curl_nops));
+    DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
 
     // patches the network version to match Windows
     network_version_patch();
