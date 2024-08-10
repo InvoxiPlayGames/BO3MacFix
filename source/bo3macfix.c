@@ -201,8 +201,8 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
         fclose(clumpfile);
 
         // call Wine with our cod2map64 binary, passing in the clump
-        char cwd[1000];
-        char wine_path[3000];
+        char cwd[1025];
+        char wine_path[3075];
         getcwd(cwd, sizeof(cwd));
         if (rosetta_translated_process())
             snprintf(wine_path, sizeof(wine_path), Wine_Path_ASi " " C2M_Path " -mac_navmesh \"Z:%s/convert.clump\" \"Z:%s/Physics/%s\"", cwd, cwd, mapname);
