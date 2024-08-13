@@ -149,7 +149,7 @@ nextaction_t StartInstall() {
     memset(sourcePath, 0, PATH_MAX);
     strncat(sourcePath, baseDirPath, PATH_MAX);
     strncat(sourcePath, "BO3MacFix.dylib", PATH_MAX);
-    if (chmod(sourcePath, 0755) != 0) { // rwxr-xr-x
+    if (chmod(sourcePath, 0644) != 0) { // rwxr-xr-x
         printf("failed (chmod: %i).\n\n", errno);
         printf("Press ENTER to continue.\n");
         getchar();

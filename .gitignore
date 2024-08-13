@@ -1,7 +1,7 @@
 .DS_Store
 *.dSYM
 assets
-scripts
+release
 AppBundleExe
 Install_BO3MacFix
 *.dylib
