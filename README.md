@@ -7,9 +7,7 @@ by Emma / InvoxiPlayGames and Anthony / serious.
 
 ### Any issues you run into with custom maps or workshop mods should be reported here, and *not* to the mod's author!
 
-## Install Guide
-
-TODO. is not ready yet
+## Install Guide: [Installing BO3MacFix](https://github.com/InvoxiPlayGames/BO3MacFix/wiki/Installing-BO3MacFix)
 
 ## Credits
 
