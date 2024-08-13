@@ -9,6 +9,8 @@ by Emma / InvoxiPlayGames and Anthony / serious.
 
 ## Install Guide: [Installing BO3MacFix](https://github.com/InvoxiPlayGames/BO3MacFix/wiki/Installing-BO3MacFix)
 
+## FAQ: [Frequently Asked Questions](https://github.com/InvoxiPlayGames/BO3MacFix/wiki/Frequently-Asked-Questions-(FAQ))
+
 ## Credits
 
 - [Anthony / serious](https://github.com/shiversoftdev) - guidance, help, t7patch and the cod2map64 patch DLL.
