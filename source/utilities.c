@@ -1,11 +1,65 @@
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <sys/sysctl.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
+#include "utilities.h"
+
+static char wine_path[2048];
+static bool wine_found = false;
+
+#define Wine_Path_ASi "/opt/homebrew/bin/wine64"
+#define Wine_Path_Intel "/usr/local/bin/wine64"
+#define Wine_Path_AppFormat "/Applications/Wine %s.app/Contents/Resources/wine/bin/wine64"
+
+const char *get_wine_path() {
+    // if we've already found a wine installation, return that
+    if (wine_found)
+        return (const char *)wine_path;
+    // if the user has manually specified a path for wine with an env variable, use that as well
+    char *env_wine_path = getenv("BO3MACFIX_WINEPATH");
+    if (env_wine_path != NULL)
+        return (const char *)env_wine_path;
+
+    // neither of these worked? let's go searching!
+
+    // first check for a homebrew-installed copy of Wine
+    if (rosetta_translated_process()) { // Apple Silicon uses a different path for Homebrew
+        if (access(Wine_Path_ASi, F_OK) == 0) {
+            printf("found homebrew wine (asi)\n");
+            wine_found = true;
+            strncpy(wine_path, Wine_Path_ASi, sizeof(wine_path));
+            return (const char *)wine_path;
+        }
+    } else {
+        if (access(Wine_Path_Intel, F_OK) == 0) {
+            printf("found homebrew wine (intel)\n");
+            wine_found = true;
+            strncpy(wine_path, Wine_Path_Intel, sizeof(wine_path));
+            return (const char *)wine_path;
+        }
+    }
+    // neither of these matched, so try to find an installed copy of Wine as an app bundle
+    const char *wine_builds[3] = { "Stable", "Staging", "Development" };
+    char wine_path_test[2048];
+    for (int i = 0; i < 3; i++)
+    {
+        snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_AppFormat, wine_builds[i]);
+        printf("checking for wine %s...\n", wine_path_test);
+        if (access(wine_path_test, F_OK) == 0) {
+            printf("found app wine (%s)\n", wine_builds[i]);
+            wine_found = true;
+            strncpy(wine_path, wine_path_test, sizeof(wine_path));
+            return (const char *)wine_path;
+        }
+    }
+    // no wine, return NULL
+    return NULL;
+}
 
 // Gets the base address of the first loaded dyld image (the game binary)
 uint64_t get_base_address() {

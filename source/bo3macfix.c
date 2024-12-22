@@ -19,15 +19,17 @@
 #include "utilities.h"
 #include "offsets.h"
 
-#define Version_Prefix "[BO3MacFix v1.0]"
+//#define MACFIX_DEBUG 1
+
+#ifdef MACFIX_DEBUG
+#define Version_Prefix "[BO3MacFix DEBUG]"
+#else
+#define Version_Prefix "[BO3MacFix v1.1-beta]"
+#endif
 #define Error_Prefix "^7[^6BO3MacFix^7] "
 
 // cod2map64 path relative to Assets folder in the .app bundle
 #define C2M_Path "../../../BO3MacFix/cod2map/cod2map64.exe"
-
-#define Wine_Path_ASi "/opt/homebrew/bin/wine64"
-#define Wine_Path_Intel "/usr/local/bin/wine64"
-#define Wine_Path_AppFormat "\"/Applications/Wine %s.app/Contents/Resources/wine/bin/wine64\""
 
 typedef struct _SESSIONMODE_STATE {
     int32_t mode : 4;
@@ -75,7 +77,9 @@ install_hook_name(Sys_VerifyPacketChecksum, int, uint8_t *payload, int paylen) {
         uint16_t expected_checksum = (uint16_t)network_password ^ Sys_Checksum(payload, newlen);
         if (payload_checksum == expected_checksum)
             return newlen;
+#ifdef MACFIX_DEBUG
         printf("Mismatched packet checksum! (%04x != %04x)\n", payload_checksum, expected_checksum);
+#endif
     }
     return -1;
 }
@@ -98,7 +102,9 @@ install_hook_name(LobbyMsgRW_PrepReadMsg, bool, void *msg) {
         uint8_t prefbyte2 = MSG_ReadByte(msg);
         if (!ZBR_PREFIX_BYTE || (((prefbyte1 == ZBR_PREFIX_BYTE) && (prefbyte2 == ZBR_PREFIX_BYTE2))))
             return true;
-        // printf("Failed prepreadmsg password (Got %02x %02x, expected %02x %02x)\n", prefbyte1, prefbyte2, ZBR_PREFIX_BYTE, ZBR_PREFIX_BYTE2);
+#ifdef MACFIX_DEBUG
+        printf("Failed prepreadmsg password (Got %02x %02x, expected %02x %02x)\n", prefbyte1, prefbyte2, ZBR_PREFIX_BYTE, ZBR_PREFIX_BYTE2);
+#endif
         return false;
     }
     return orig;
@@ -120,7 +126,9 @@ install_hook_name(load_workshop_texture, void *, const char *path) {
 
 // Prints out logs to stdout that would normally go in the logging window
 install_hook_name(someLoggingFunction, void, int bla, int bla2, char *str, int bla3) {
+#ifdef MACFIX_DEBUG
     printf("%s", str);
+#endif
     orig_someLoggingFunction(bla, bla2, str, bla3);
     return;
 }
@@ -151,6 +159,8 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     char physicsPath[0x200];
     snprintf(physicsPath, sizeof(physicsPath), "Physics/%s_navmesh.hkt", mapname);
     if (access(physicsPath, F_OK) != 0) {
+        if (get_wine_path() == NULL)
+            Com_Error(__FILE__, __LINE__, 2, Error_Prefix "You do not have Wine installed, so we can't convert the map '^2%s^7'.", mapname);
         char full_path[0x200];
         build_usermods_path(mapname, ".ff", 0x200, full_path, 2, (char *)(game_base_address + ADDR_g_workshopMapId));
         printf("map fastfile is '%s'\n", full_path);
@@ -204,10 +214,7 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
         char cwd[1025];
         char wine_path[3075];
         getcwd(cwd, sizeof(cwd));
-        if (rosetta_translated_process())
-            snprintf(wine_path, sizeof(wine_path), Wine_Path_ASi " " C2M_Path " -mac_navmesh \"Z:%s/convert.clump\" \"Z:%s/Physics/%s\"", cwd, cwd, mapname);
-        else
-            snprintf(wine_path, sizeof(wine_path), Wine_Path_Intel " " C2M_Path " -mac_navmesh \"Z:%s/convert.clump\" \"Z:%s/Physics/%s\"", cwd, cwd, mapname);
+        snprintf(wine_path, sizeof(wine_path), "\"%s\" " C2M_Path " -mac_navmesh \"Z:%s/convert.clump\" \"Z:%s/Physics/%s\"", get_wine_path(), cwd, cwd, mapname);
         printf("executing: %s\n", wine_path);
         unsetenv("DYLD_INSERT_LIBRARIES"); // stop steam from fucking with our wine
         FILE *convert = popen(wine_path, "r"); // can we log stdout easily from this?
@@ -286,6 +293,14 @@ static void network_version_patch() {
     DobbyCodePatch((void *)(game_base_address + ADDR_LPC_GetRemoteManifest_Category_Inst + 6), (uint8_t *)&newcategory, sizeof(uint32_t));
 }
 
+void set_network_password(const char *password)
+{
+    if (password == NULL || strlen(password) < 1)
+        network_password = 0;
+    else
+        network_password = gscu_canon_hash64(password);
+}
+
 int system_new(const char *command) {
     return -1;
 }
@@ -341,9 +356,9 @@ __attribute__((constructor)) static void dylib_main() {
     // set the network password rather than having it be 0 - should probably have a gui to set it
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
     if (password_text != NULL && strlen(password_text) >= 1) {
-        network_password = gscu_canon_hash64(password_text);
+        set_network_password(password_text);
     }
-
+        
     // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
     uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
     memset(curl_nops, 0x90, sizeof(curl_nops));
@@ -351,6 +366,8 @@ __attribute__((constructor)) static void dylib_main() {
 
     // patches the network version to match Windows
     network_version_patch();
+
+    get_wine_path();
 
     // i'll figure all that stuff out later :')
     //int sbr = sandbox_init_with_parameters("(version 1)(allow default)(debug allow)", 0, NULL, NULL);
