@@ -17,6 +17,8 @@
 #define ADDR_LobbyMsgRW_PrepReadMsg 0xf416fb // func
 #define ADDR_MSG_ReadByte 0x1247989 // func
 #define ADDR_MSG_WriteByte 0x12473d3 // func
+#define ADDR_path_conversion_func 0xe9f6d // func - name is a guess
+#define ADDR_CSteamAPIContext_Init 0xd311e0
 
 //globals
 #define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess

@@ -8,6 +8,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include "utilities.h"
+#include "dobby.h"
 
 static char wine_path[2048];
 static bool wine_found = false;
@@ -99,4 +100,11 @@ uint64_t gscu_canon_hash64(const char *input) {
 		_input++;
 	}
 	return 0x7FFFFFFFFFFFFFFF & hash;
+}
+
+void replace_vtable_entry(void *entry, void *replacement) {
+    uint8_t replacement_bytes[8];
+    uint64_t replacement_addy = (uint64_t)replacement;
+    memcpy(replacement_bytes, &replacement_addy, sizeof(uint64_t));
+    DobbyCodePatch(entry, replacement_bytes, 8);
 }

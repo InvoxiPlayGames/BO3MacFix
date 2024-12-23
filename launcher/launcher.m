@@ -1,4 +1,5 @@
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <Foundation/Foundation.h>
 
@@ -22,11 +23,20 @@ int main(int argc, char **argv) {
     }
     newEnvironment[@"WINEPREFIX"] = [[gameProc.currentDirectoryURL URLByAppendingPathComponent:@"../../../BO3MacFix/pfx"] path];
     newEnvironment[@"SteamAppId"] = @"311210";
-    // check if we have a password in the args
-    if (argc >= 3 && strcmp("--password", argv[1]) == 0) {
-        newEnvironment[@"BO3MACFIX_NETWORKPASSWORD"] = [NSString stringWithUTF8String:argv[2]];
+    // parse our arguments and figure out which ones we send to the new process vs which ones we 
+    NSMutableArray *newArguments = [[NSMutableArray alloc] init];
+    for (int i = 0; i < argc; i++) {
+        if (strcasecmp(argv[i], "--password") == 0 && i + 1 < argc)
+            newEnvironment[@"BO3MACFIX_NETWORKPASSWORD"] = [NSString stringWithUTF8String:argv[++i]];
+        else if (strcasecmp(argv[i], "--playername") == 0 && i + 1 < argc)
+            newEnvironment[@"BO3MACFIX_PLAYERNAME"] = [NSString stringWithUTF8String:argv[++i]];
+        else if (strcasecmp(argv[i], "--winepath") == 0 && i + 1 < argc)
+            newEnvironment[@"BO3MACFIX_WINEPATH"] = [NSString stringWithUTF8String:argv[++i]];
+        else
+            [newArguments addObject:[NSString stringWithUTF8String:argv[i]]];
     }
     gameProc.environment = newEnvironment;
+    gameProc.arguments = newArguments;
     
     //NSLog(@"Launching game...\n");
     //NSLog(@"  Executable: %@\n", gameProc.executableURL);

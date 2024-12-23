@@ -9,6 +9,7 @@
 #include <mach-o/getsect.h>
 #include "dyld-interposing.h"
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
 #include <sandbox.h>
@@ -18,6 +19,7 @@
 #include "dobby.h"
 #include "utilities.h"
 #include "offsets.h"
+#include "steam.h"
 
 //#define MACFIX_DEBUG 1
 
@@ -29,7 +31,7 @@
 #define Error_Prefix "^7[^6BO3MacFix^7] "
 
 // cod2map64 path relative to Assets folder in the .app bundle
-#define C2M_Path "../../../BO3MacFix/cod2map/cod2map64.exe"
+#define Macfix_Path "../../../BO3MacFix"
 
 typedef struct _SESSIONMODE_STATE {
     int32_t mode : 4;
@@ -153,12 +155,15 @@ install_hook_name(Live_SystemInfo, bool, int controllerIndex, int info, char *ou
 
 // Initialises the navmesh and navvolume for the map.
 // If we haven't made conversions already, call our conversion tool's binary.
+#define C2M_Path Macfix_Path "/cod2map/cod2map64.exe"
 install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     printf("HKAI_InitMapData for %s\n", mapname);
 
     char physicsPath[0x200];
+    char physicsAltPath[0x200];
     snprintf(physicsPath, sizeof(physicsPath), "Physics/%s_navmesh.hkt", mapname);
-    if (access(physicsPath, F_OK) != 0) {
+    snprintf(physicsAltPath, sizeof(physicsAltPath), Macfix_Path "/Physics/%s_navmesh.hkt", mapname);
+    if (access(physicsPath, F_OK) != 0 && access(physicsAltPath, F_OK) != 0) {
         if (get_wine_path() == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "You do not have Wine installed, so we can't convert the map '^2%s^7'.", mapname);
         char full_path[0x200];
@@ -191,8 +196,12 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
             header.bigNavVolumeMediatorBufferSize = old_navvolume->bigNavVolumeMediatorBufferSize;
         }
 
+        // make sure the new physics folder exists
+        if (access(Macfix_Path "/Physics/", F_OK) != 0)
+            mkdir(Macfix_Path "/Physics/", 0644);
+
         // write out the header and all the navmesh/navvolume data to the clump
-        FILE *clumpfile = fopen("convert.clump", "wb");
+        FILE *clumpfile = fopen(Macfix_Path "/Physics/convert.clump", "wb");
         if (clumpfile == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "Failed to create map conversion clump file.");
         fwrite(&header, sizeof(clumpheader), 1, clumpfile);
@@ -214,18 +223,23 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
         char cwd[1025];
         char wine_path[3075];
         getcwd(cwd, sizeof(cwd));
-        snprintf(wine_path, sizeof(wine_path), "\"%s\" " C2M_Path " -mac_navmesh \"Z:%s/convert.clump\" \"Z:%s/Physics/%s\"", get_wine_path(), cwd, cwd, mapname);
+        snprintf(wine_path, sizeof(wine_path), "\"%s\" " C2M_Path " -mac_navmesh \"Z:%s/" Macfix_Path "/Physics/convert.clump\" \"Z:%s/" Macfix_Path "/Physics/%s\"", get_wine_path(), cwd, cwd, mapname);
         printf("executing: %s\n", wine_path);
         unsetenv("DYLD_INSERT_LIBRARIES"); // stop steam from fucking with our wine
-        FILE *convert = popen(wine_path, "r"); // can we log stdout easily from this?
+        FILE *convert = popen(wine_path, "r");
         if (convert == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "Failed to start map conversion process for '^2%s^7'.", mapname);
+        char stdoutresult[0x400] = {0};
+        fread(stdoutresult, 1, 0x400, convert);
         pclose(convert);
+        printf("%s\n", stdoutresult);
         printf("conversion complete!\n");
 
         // make sure we have a navmesh file generated
-        if (access(physicsPath, F_OK) != 0)
+        if (access(physicsAltPath, F_OK) != 0)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "Failed to convert map '^2%s^7' to Mac navmesh format.", mapname);
+        
+        unlink(Macfix_Path "/Physics/convert.clump");
     }
 
     orig_HKAI_InitMapData(mapname, restart);
@@ -312,6 +326,78 @@ DYLD_INTERPOSE(popen_new, popen);
 
 int sandbox_init_with_parameters(const char *profile, uint64_t flags, const char *const parameters[], char **errorbuf);
 
+#define EMUPATH_B "C:\\Emu\\AppAssets"
+#define EMUPATH_F "C:/Emu/AppAssets"
+install_hook_name(path_conversion_func, void *, void *input, char *in_str)
+{
+    char cwd[1025];
+    getcwd(cwd, sizeof(cwd));
+    size_t cwdlen = strlen(cwd);
+
+    char newpath[4096] = { 0 };
+    char *in_filename = NULL;
+
+    // check if the file being resolves is either in the game's Assets folder (the cwd)
+    // or is C:/Emu/AppAssets, which is the assets folder again
+    if (strncmp(cwd, in_str, cwdlen) == 0) {
+        in_filename = in_str + cwdlen;
+    } else if (strncmp(EMUPATH_B, in_str, strlen(EMUPATH_B)) == 0 ||
+        strncmp(EMUPATH_F, in_str, strlen(EMUPATH_F)) == 0) {
+        in_filename = in_str + strlen(EMUPATH_F);
+    }
+    // if it's in our cwd check if we have it in the BO3MacFix folder and redirect to read from there instead
+    if (in_filename != NULL && strlen(in_filename) >= 2) {
+        strncat(newpath, cwd, sizeof(newpath) - strlen(newpath) - 1);
+        newpath[strlen(newpath)] = '/';
+        strncat(newpath, Macfix_Path, sizeof(newpath) - strlen(newpath) - 1);
+        newpath[strlen(newpath)] = '/';
+        strncat(newpath, in_filename, sizeof(newpath) - strlen(newpath) - 1);
+        // correct any backticks before checking if it exists
+        for (int i = 0; i < strlen(newpath); i++)
+            if (newpath[i] == '\\') newpath[i] = '/';
+        // if the file exists redirect it, or if it's a mod/usermap
+        if (access(newpath, F_OK) == 0 || strstr(newpath, "/usermaps/") != NULL || strstr(newpath, "/mods/") != NULL) {
+            // to avoid logspam only log files that exist
+            if (access(newpath, F_OK) == 0)
+                printf("redirecting %s to \"%s\"\n", in_filename, newpath);
+            return orig_path_conversion_func(input, newpath);
+        }
+    }
+    
+    return orig_path_conversion_func(input, in_str);
+}
+
+bool ISteamApps_BIsSubscribedApp(void *interface, AppId_t app) {
+    return steam_dlc_owns(app);
+}
+
+bool ISteamApps_BIsDlcInstalled(void *interface, AppId_t app) {
+    return steam_dlc_installed(app);
+}
+
+const char *ISteamFriends_GetPersonaName(void *interface) {
+    const char *envname = getenv("BO3MACFIX_PLAYERNAME");
+    if (envname != NULL && strlen(envname) >= 1 && strlen(envname) <= 16)
+        return envname;
+    return steam_name();
+}
+
+install_hook_name(CSteamAPIContext_Init, bool, CSteamAPIContext *ctx) {
+    bool r = orig_CSteamAPIContext_Init(ctx);
+    if (r == true) {
+        init_steam_context(ctx);
+        // populate our caches
+        steam_friends_refresh_cache();
+        steam_dlc_refresh_cache();
+        // replace ISteamApps DLC to use cached versions
+        replace_vtable_entry(&(*ctx->m_pSteamApps)->BIsSubscribedApp, ISteamApps_BIsSubscribedApp);
+        replace_vtable_entry(&(*ctx->m_pSteamApps)->BIsDlcInstalled, ISteamApps_BIsDlcInstalled);
+        // replace ISteamFriends to do our username spoof
+        replace_vtable_entry(&(*ctx->m_pSteamFriends)->GetPersonaName, ISteamFriends_GetPersonaName);
+    }
+    return r;
+}
+
 // Entrypoint for the dylib
 __attribute__((constructor)) static void dylib_main() {
     // make sure we're loading into the game process and nothing else
@@ -335,6 +421,8 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_Sys_CheckSumPacketCopy((void *)(game_base_address + ADDR_Sys_CheckSumPacketCopy));
     install_hook_LobbyMsgRW_PrepReadMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepReadMsg));
     install_hook_LobbyMsgRW_PrepWriteMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepWriteMsg));
+    install_hook_path_conversion_func((void *)(game_base_address + ADDR_path_conversion_func));
+    install_hook_CSteamAPIContext_Init((void *)(game_base_address + ADDR_CSteamAPIContext_Init));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
