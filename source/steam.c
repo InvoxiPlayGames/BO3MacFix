@@ -41,9 +41,9 @@ void steam_friends_refresh_cache() {
     printf("populated friends cache with %i users\n", numFriendsInCache);
 }
 
-bool steam_friends_with_user(CSteamID id) {
+bool steam_friends_with_user(uint64_t id) {
     for (int i = 0; i < numFriendsInCache; i++) {
-        if (id.id == friendsCache[i].id)
+        if (id == friendsCache[i].id)
             return true;
     }
     return false;

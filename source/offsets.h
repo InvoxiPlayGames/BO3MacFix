@@ -18,7 +18,8 @@
 #define ADDR_MSG_ReadByte 0x1247989 // func
 #define ADDR_MSG_WriteByte 0x12473d3 // func
 #define ADDR_path_conversion_func 0xe9f6d // func - name is a guess
-#define ADDR_CSteamAPIContext_Init 0xd311e0
+#define ADDR_CSteamAPIContext_Init 0xd311e0 // func
+#define ADDR_dwInstantMessageDispatch 0xe36915 // func
 
 //globals
 #define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess
@@ -31,4 +32,5 @@
 #define ADDR_Curl_ContentLengthSetEnd 0x159346f // mid-func
 #define ADDR_Lua_CoD_LuaCall_GetProtocolVersion_Inst 0xE1FCA8 // mid-func
 #define ADDR_LPC_GetRemoteManifest_Category_Inst 0xEA8C04 // mid-func
+#define ADDR_Live_SystemInfo_LarpInstr 0x129dbcc // mid-func
 // -- END OFFSETS

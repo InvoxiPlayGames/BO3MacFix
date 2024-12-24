@@ -46,6 +46,8 @@ typedef struct _SESSIONMODE_STATE {
 uint64_t game_base_address = 0x0;
 // The hashed network password used for network encryption.
 uint64_t network_password = 0;
+// Whether to only allow friends to join the session.
+bool friends_only = false;
 
 // Returns the current gamemode string as used in paths
 static const char *GetGamemodeString() {
@@ -151,6 +153,38 @@ install_hook_name(Live_SystemInfo, bool, int controllerIndex, int info, char *ou
         strncpy(outputString, newStr, outputLen);
     }
     return r;
+}
+
+// Rejects instant messages from users who aren't friends if friends only is enabled.
+install_hook_name(dwInstantDispatchMessage, bool, uint64_t userId, int controllerIndex, uint8_t *data, int datalen) {
+    if (friends_only) {
+        if (!steam_friends_with_user(userId) && // user isn't a friend
+            userId != steam_id().id && // user isn't ourselves
+            (userId >> 32) == 0x01100001) { // user is a steamid, not a guest or gameserver
+#ifdef MACFIX_DEBUG
+            printf("Rejecting instant message from %016llx due to friendsonly\n", userId);
+#endif
+            return true;
+        }
+    }
+    if (datalen >= 2) {
+        if (data[0] == 0x31) {
+#ifdef MACFIX_DEBUG
+            printf("Rejecting instant message from %016llx since it's invalid (1)\n", userId);
+#endif
+            return true;
+        }
+        if (data[1] == 0x65 || data[1] == 0x6D) {
+#ifdef MACFIX_DEBUG
+            printf("Rejecting instant message from %016llx since it's invalid (2)\n", userId);
+#endif
+            return true;
+        }
+    }
+#ifdef MACFIX_DEBUG
+    printf("Dispatching instant message from %016llx\n", userId);
+#endif
+    return orig_dwInstantDispatchMessage(userId, controllerIndex, data, datalen);
 }
 
 // Initialises the navmesh and navvolume for the map.
@@ -423,6 +457,7 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_LobbyMsgRW_PrepWriteMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepWriteMsg));
     install_hook_path_conversion_func((void *)(game_base_address + ADDR_path_conversion_func));
     install_hook_CSteamAPIContext_Init((void *)(game_base_address + ADDR_CSteamAPIContext_Init));
+    install_hook_dwInstantDispatchMessage((void *)(game_base_address + ADDR_dwInstantMessageDispatch));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
@@ -441,10 +476,24 @@ __attribute__((constructor)) static void dylib_main() {
     uint8_t ret[1] = { 0xC3 };
     DobbyCodePatch((void *)(game_base_address + ADDR_Lua_CmdParseArgs), ret, sizeof(ret));
 
+    // larp as v100 in the version number just to feel nice about yourself :3
+    // probably not doing this until we're closer to v100
+    //uint8_t larp[1] = { 100 };
+    //DobbyCodePatch((void *)(game_base_address + ADDR_Live_SystemInfo_LarpInstr), larp, sizeof(larp));
+
     // set the network password rather than having it be 0 - should probably have a gui to set it
     const char *password_text = getenv("BO3MACFIX_NETWORKPASSWORD");
     if (password_text != NULL && strlen(password_text) >= 1) {
         set_network_password(password_text);
+    } else {
+        // some sort of safety net
+    }
+
+    // enable friends only if it's specified at env
+    const char *friends_only_env = getenv("BO3MACFIX_FRIENDSONLY");
+    if (friends_only_env != NULL &&
+        (strcasecmp(friends_only_env, "true") == 0 || strcasecmp(friends_only_env, "1") == 0)) {
+        friends_only = true;
     }
         
     // nop out where dw sets the Content-Length header, fixes a bug with modern macOS failing to log in online
@@ -455,6 +504,7 @@ __attribute__((constructor)) static void dylib_main() {
     // patches the network version to match Windows
     network_version_patch();
 
+    // pre-fetch the wine path so we don't need to search earlier
     get_wine_path();
 
     // i'll figure all that stuff out later :')

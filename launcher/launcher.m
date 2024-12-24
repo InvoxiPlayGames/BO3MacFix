@@ -32,6 +32,8 @@ int main(int argc, char **argv) {
             newEnvironment[@"BO3MACFIX_PLAYERNAME"] = [NSString stringWithUTF8String:argv[++i]];
         else if (strcasecmp(argv[i], "--winepath") == 0 && i + 1 < argc)
             newEnvironment[@"BO3MACFIX_WINEPATH"] = [NSString stringWithUTF8String:argv[++i]];
+        else if (strcasecmp(argv[i], "--friendsonly") == 0)
+            newEnvironment[@"BO3MACFIX_FRIENDSONLY"] = @"true";
         else
             [newArguments addObject:[NSString stringWithUTF8String:argv[i]]];
     }
