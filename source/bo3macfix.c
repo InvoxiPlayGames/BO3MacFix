@@ -168,7 +168,7 @@ install_hook_name(dwInstantDispatchMessage, bool, uint64_t userId, int controlle
         }
     }
     if (datalen >= 2) {
-        if (data[0] == 0x31) {
+        if (data[0] != 0x31) {
 #ifdef MACFIX_DEBUG
             printf("Rejecting instant message from %016llx since it's invalid (1)\n", userId);
 #endif
