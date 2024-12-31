@@ -23,6 +23,7 @@
 #define ADDR_hks_load_dll 0x148460d // func
 #define ADDR_hksf_fopen_internal 0xfb503 // func - name is a guess, called by hksf_fopen
 #define ADDR_CL_FirstSnapshot 0xe2f0be // func
+#define ADDR_Com_GetBuildIntField 0xf16d9a // func
 
 //globals
 #define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess

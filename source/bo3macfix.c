@@ -460,6 +460,7 @@ install_hook_name(hksf_fopen_internal, void *, char *filename, char *opentype, i
     return fopen(newpath, opentype);
 }
 
+static bool shown_dll_warning = false;
 install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char *func_name) {
     printf("Lua loadlib with '%s' (func: '%s')\n", filename, func_name);
     char newpath[4096];
@@ -482,11 +483,13 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
     }
 
     // display an alert message (that makes sense) to the user informing them that the DLL load has failed
-    if (!is_macos_dylib(newpath)) {
+    if (!is_macos_dylib(newpath) && !shown_dll_warning) {
         printf("which isn't a macOS dylib, erroring...\n");
         char alert_msg[1024];
-        snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. These mods aren't supported on macOS, and the game will break.\n\n%s: %s", filename_from_path(newpath), func_name);
-        display_nsalert("BO3MacFix Mod Error", alert_msg);
+        snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. The game might work fine, but it might be unstable.\n\n%s: %s", filename_from_path(newpath), func_name);
+        display_nsalert("BO3MacFix Mod Warning", alert_msg);
+        // only show the warning once
+        shown_dll_warning = true;
     }
 
     // TODO(Emma): we want to make sure the OS won't reject the dylib load because of Gatekeeper...
@@ -497,6 +500,14 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
 install_hook_name(CL_FirstSnapshot, void, void *arg) {
     bounce_dock_icon();
     return orig_CL_FirstSnapshot(arg);
+}
+
+install_hook_name(Com_GetBuildIntField, int, int field) {
+    // if the field is this magic number ("Mac!"), return a version number
+    if (field == 0x4D616321) {
+        return 0x00000101; // 0x0101 for 1.1
+    }
+    return orig_Com_GetBuildIntField(field);
 }
 
 // Entrypoint for the dylib
@@ -527,6 +538,7 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_hks_load_dll((void *)(game_base_address + ADDR_hks_load_dll));
     install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
     install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
+    install_hook_Com_GetBuildIntField((void *)(game_base_address + ADDR_Com_GetBuildIntField));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
