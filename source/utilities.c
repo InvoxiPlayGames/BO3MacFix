@@ -1,3 +1,4 @@
+#include <CommonCrypto/CommonDigest.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -9,6 +10,9 @@
 #include <mach-o/getsect.h>
 #include "utilities.h"
 #include "dobby.h"
+#ifndef NO_OSX
+#include <CommonCrypto/CommonCrypto.h>
+#endif
 
 static char wine_path[2048];
 static bool wine_found = false;
@@ -124,4 +128,32 @@ bool is_macos_dylib(const char *path) {
         fclose(fp);
     }
     return false;
+}
+
+// Gets the SHA-1 hash of a file
+bool get_file_sha1(const char *path, uint8_t *output_hash) {
+    FILE *fp = fopen(path, "rb");
+    if (fp != NULL) {
+        CC_SHA1_CTX ctx;
+        CC_SHA1_Init(&ctx);
+        uint8_t file_read_buffer[512] = {0};
+        int r = 0;
+        while ((r = fread(file_read_buffer, 1, sizeof(file_read_buffer), fp)) > 0) {
+            CC_SHA1_Update(&ctx, file_read_buffer, r);
+        }
+        CC_SHA1_Final(output_hash, &ctx);
+        fclose(fp);
+        return true;
+    }
+    return false;
+}
+
+bool bytes_to_hex(const uint8_t *bytes, size_t bytes_len, char *out_string, size_t out_string_len) {
+    if ((bytes_len * 2) >= out_string_len)
+        return false;
+    out_string[0] = '\0';
+    for (size_t i = 0; i < bytes_len; i++) {
+        snprintf(out_string, out_string_len, "%s%02x", out_string, bytes[i]);
+    }
+    return true;
 }

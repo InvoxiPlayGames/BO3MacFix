@@ -1,3 +1,4 @@
+#include <_stdio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -465,12 +466,30 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
     lua_correct_path(filename, newpath, sizeof(newpath));
     printf("-> '%s'\n", newpath);
 
+    // so we can bundle support for workshop mods retroactively where the creator might not be able to / is unwilling to add a dylib
+    // we check /BO3MacFix/natives/[dll name]-[dll hash].dylib
+    char test_native_path[1024];
+    uint8_t file_sha1_hash[0x14];
+    char file_sha1_hash_str[(0x14 * 2) + 1];
+    if (get_file_sha1(newpath, file_sha1_hash)) {
+        if (bytes_to_hex(file_sha1_hash, sizeof(file_sha1_hash), file_sha1_hash_str, sizeof(file_sha1_hash_str))) {
+            snprintf(test_native_path, sizeof(test_native_path), Macfix_Path "/natives/%s-%s.dylib", filename_from_path(newpath), file_sha1_hash_str);
+            if (access(test_native_path, F_OK) == 0) {
+                printf("--> %s\n", test_native_path);
+                return orig_hks_load_dll(s, test_native_path, func_name);
+            }
+        }
+    }
+
+    // display an alert message (that makes sense) to the user informing them that the DLL load has failed
     if (!is_macos_dylib(newpath)) {
         printf("which isn't a macOS dylib, erroring...\n");
         char alert_msg[1024];
-        snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. The game might break.\n\n%s: %s", filename_from_path(newpath), func_name);
+        snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. These mods aren't supported on macOS, and the game will break.\n\n%s: %s", filename_from_path(newpath), func_name);
         display_nsalert("BO3MacFix Mod Error", alert_msg);
     }
+
+    // TODO(Emma): we want to make sure the OS won't reject the dylib load because of Gatekeeper...
 
     return orig_hks_load_dll(s, newpath, func_name);
 }
