@@ -30,7 +30,8 @@
 #endif
 #define Error_Prefix "^7[^6BO3MacFix^7] "
 
-// cod2map64 path relative to Assets folder in the .app bundle
+#define Basegame_Path "../../../"
+
 #define Macfix_Path "../../../BO3MacFix"
 
 typedef struct _SESSIONMODE_STATE {
@@ -362,7 +363,7 @@ int sandbox_init_with_parameters(const char *profile, uint64_t flags, const char
 
 #define EMUPATH_B "C:\\Emu\\AppAssets"
 #define EMUPATH_F "C:/Emu/AppAssets"
-install_hook_name(path_conversion_func, void *, void *input, char *in_str)
+install_hook_name(ASL_ToNativePath, void *, void *asl, char *in_str)
 {
     char cwd[1025];
     getcwd(cwd, sizeof(cwd));
@@ -379,26 +380,36 @@ install_hook_name(path_conversion_func, void *, void *input, char *in_str)
         strncmp(EMUPATH_F, in_str, strlen(EMUPATH_F)) == 0) {
         in_filename = in_str + strlen(EMUPATH_F);
     }
+    // check if it's an external mod or usermap, these need to go to / instead of /BO3MacFix/
+    // not a perfect check but i'm not checking for every permutation and i want to check *before* path correction
+    bool is_user_mod = 
+        strstr(in_str, "/usermaps") != NULL || strstr(in_str, "/mods") != NULL ||
+        strstr(in_str, "\\usermaps") != NULL || strstr(in_str, "\\mods") != NULL;
     // if it's in our cwd check if we have it in the BO3MacFix folder and redirect to read from there instead
     if (in_filename != NULL && strlen(in_filename) >= 2) {
         strncat(newpath, cwd, sizeof(newpath) - strlen(newpath) - 1);
         newpath[strlen(newpath)] = '/';
-        strncat(newpath, Macfix_Path, sizeof(newpath) - strlen(newpath) - 1);
+        if (is_user_mod)
+            strncat(newpath, Basegame_Path, sizeof(newpath) - strlen(newpath) - 1);
+        else
+            strncat(newpath, Macfix_Path, sizeof(newpath) - strlen(newpath) - 1);
         newpath[strlen(newpath)] = '/';
         strncat(newpath, in_filename, sizeof(newpath) - strlen(newpath) - 1);
         // correct any backticks before checking if it exists
         for (int i = 0; i < strlen(newpath); i++)
             if (newpath[i] == '\\') newpath[i] = '/';
-        // if the file exists redirect it, or if it's a mod/usermap
-        if (access(newpath, F_OK) == 0 || strstr(newpath, "/usermaps/") != NULL || strstr(newpath, "/mods/") != NULL) {
+        // if the file exists redirect it, or if it's a mod
+        if (is_user_mod || access(newpath, F_OK) == 0) {
+#ifdef MACFIX_DEBUG
             // to avoid logspam only log files that exist
             if (access(newpath, F_OK) == 0)
                 printf("redirecting %s to \"%s\"\n", in_filename, newpath);
-            return orig_path_conversion_func(input, newpath);
+#endif
+            return orig_ASL_ToNativePath(asl, newpath);
         }
     }
     
-    return orig_path_conversion_func(input, in_str);
+    return orig_ASL_ToNativePath(asl, in_str);
 }
 
 bool ISteamApps_BIsSubscribedApp(void *interface, AppId_t app) {
@@ -432,6 +443,43 @@ install_hook_name(CSteamAPIContext_Init, bool, CSteamAPIContext *ctx) {
     return r;
 }
 
+void lua_correct_path(const char *in_path, char *out_path, size_t out_path_len) {
+    out_path[0] = '\0';
+    strncat(out_path, Basegame_Path, out_path_len - strlen(out_path) - 1);
+    strncat(out_path, in_path, out_path_len - strlen(out_path) - 1);
+    for (int i = 0; i < strlen(out_path); i++)
+        if (out_path[i] == '\\') out_path[i] = '/';
+}
+
+install_hook_name(hksf_fopen_internal, void *, char *filename, char *opentype, int unknown) {
+    printf("Lua opening file '%s'\n", filename);
+    char newpath[4096];
+    lua_correct_path(filename, newpath, sizeof(newpath));
+    printf("-> '%s'\n", newpath);
+    return fopen(newpath, opentype);
+}
+
+install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char *func_name) {
+    printf("Lua loadlib with '%s' (func: '%s')\n", filename, func_name);
+    char newpath[4096];
+    lua_correct_path(filename, newpath, sizeof(newpath));
+    printf("-> '%s'\n", newpath);
+
+    if (!is_macos_dylib(newpath)) {
+        printf("which isn't a macOS dylib, erroring...\n");
+        char alert_msg[1024];
+        snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. The game might break.\n\n%s: %s", filename_from_path(newpath), func_name);
+        display_nsalert("BO3MacFix Mod Error", alert_msg);
+    }
+
+    return orig_hks_load_dll(s, newpath, func_name);
+}
+
+install_hook_name(CL_FirstSnapshot, void, void *arg) {
+    bounce_dock_icon();
+    return orig_CL_FirstSnapshot(arg);
+}
+
 // Entrypoint for the dylib
 __attribute__((constructor)) static void dylib_main() {
     // make sure we're loading into the game process and nothing else
@@ -443,7 +491,6 @@ __attribute__((constructor)) static void dylib_main() {
 
     // get the base address of the binary
     game_base_address = get_base_address();
-    printf("loaded into %s (0x%llx)!\n", image_name, game_base_address);
 
     // apply the hooks
     install_hook_HKAI_InitMapData((void *)(game_base_address + ADDR_HKAI_InitMapData));
@@ -455,9 +502,12 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_Sys_CheckSumPacketCopy((void *)(game_base_address + ADDR_Sys_CheckSumPacketCopy));
     install_hook_LobbyMsgRW_PrepReadMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepReadMsg));
     install_hook_LobbyMsgRW_PrepWriteMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepWriteMsg));
-    install_hook_path_conversion_func((void *)(game_base_address + ADDR_path_conversion_func));
+    install_hook_ASL_ToNativePath((void *)(game_base_address + ADDR_ASL_ToNativePath));
     install_hook_CSteamAPIContext_Init((void *)(game_base_address + ADDR_CSteamAPIContext_Init));
     install_hook_dwInstantDispatchMessage((void *)(game_base_address + ADDR_dwInstantMessageDispatch));
+    install_hook_hks_load_dll((void *)(game_base_address + ADDR_hks_load_dll));
+    install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
+    install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);

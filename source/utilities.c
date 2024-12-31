@@ -102,9 +102,26 @@ uint64_t gscu_canon_hash64(const char *input) {
 	return 0x7FFFFFFFFFFFFFFF & hash;
 }
 
+// Replaces a vtable entry with the address of a function
 void replace_vtable_entry(void *entry, void *replacement) {
     uint8_t replacement_bytes[8];
     uint64_t replacement_addy = (uint64_t)replacement;
     memcpy(replacement_bytes, &replacement_addy, sizeof(uint64_t));
     DobbyCodePatch(entry, replacement_bytes, 8);
+}
+
+// Checks if a file at a given path is a macOS binary
+bool is_macos_dylib(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (fp != NULL) {
+        uint8_t file_magic[4] = {0};
+        if (fread(file_magic, 1, 4, fp) == 4) {
+            // 0xFEEDFACF - 64-bit Mach-O
+            static const uint8_t macho_header[4] = {0xcf, 0xfa, 0xed, 0xfe};
+            if (memcmp(file_magic, macho_header, 4) == 0)
+                return true;
+        }
+        fclose(fp);
+    }
+    return false;
 }

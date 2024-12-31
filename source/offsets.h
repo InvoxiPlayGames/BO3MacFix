@@ -17,9 +17,12 @@
 #define ADDR_LobbyMsgRW_PrepReadMsg 0xf416fb // func
 #define ADDR_MSG_ReadByte 0x1247989 // func
 #define ADDR_MSG_WriteByte 0x12473d3 // func
-#define ADDR_path_conversion_func 0xe9f6d // func - name is a guess
+#define ADDR_ASL_ToNativePath 0xe9f6d // func
 #define ADDR_CSteamAPIContext_Init 0xd311e0 // func
 #define ADDR_dwInstantMessageDispatch 0xe36915 // func
+#define ADDR_hks_load_dll 0x148460d // func
+#define ADDR_hksf_fopen_internal 0xfb503 // func - name is a guess, called by hksf_fopen
+#define ADDR_CL_FirstSnapshot 0xe2f0be // func
 
 //globals
 #define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess

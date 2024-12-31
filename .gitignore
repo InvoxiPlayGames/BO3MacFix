@@ -2,6 +2,7 @@
 *.dSYM
 assets
 release
+natives
 AppBundleExe
 Install_BO3MacFix
 *.dylib

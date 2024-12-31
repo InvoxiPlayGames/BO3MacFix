@@ -6,3 +6,4 @@ bool rosetta_translated_process();
 uint64_t gscu_canon_hash64(const char *input);
 const char *get_wine_path();
 void replace_vtable_entry(void *entry, void *replacement);
+bool is_macos_dylib(const char *path);
