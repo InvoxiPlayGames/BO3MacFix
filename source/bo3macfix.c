@@ -22,7 +22,7 @@
 #include "offsets.h"
 #include "steam.h"
 
-//#define MACFIX_DEBUG 1
+#include "versioninfo.h"
 
 #ifdef MACFIX_DEBUG
 #define Version_Prefix "[BO3MacFix DEBUG]"
@@ -505,7 +505,7 @@ install_hook_name(CL_FirstSnapshot, void, void *arg) {
 install_hook_name(Com_GetBuildIntField, int, int field) {
     // if the field is this magic number ("Mac!"), return a version number
     if (field == 0x4D616321) {
-        return 0x00000101; // 0x0101 for 1.1
+        return 0x00000102; // 0x0102 for 1.2
     }
     return orig_Com_GetBuildIntField(field);
 }

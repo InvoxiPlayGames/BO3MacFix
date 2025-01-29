@@ -2,9 +2,11 @@
 *.dSYM
 assets
 release
+launcherv2
 natives
 AppBundleExe
 Install_BO3MacFix
+BO3MacFixLauncher
 *.dylib
 *.exe
 *.dll

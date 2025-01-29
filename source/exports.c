@@ -7,6 +7,7 @@
 
 #define EXPORT __attribute__((visibility("default")))
 
+// defined in bo3macfix.c
 extern uint64_t game_base_address;
 
 EXPORT uint64_t BO3MacFix_GetBaseAddress() {

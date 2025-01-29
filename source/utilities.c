@@ -17,9 +17,10 @@
 static char wine_path[2048];
 static bool wine_found = false;
 
-#define Wine_Path_ASi "/opt/homebrew/bin/wine64"
-#define Wine_Path_Intel "/usr/local/bin/wine64"
-#define Wine_Path_AppFormat "/Applications/Wine %s.app/Contents/Resources/wine/bin/wine64"
+#define Homebrew_ASi "/opt/homebrew"
+#define Homebrew_Intel "/usr/local"
+#define Wine_Path_Format "%s/bin/%s"
+#define Wine_Path_AppFormat "/Applications/Wine %s.app/Contents/Resources/wine/bin/%s"
 
 const char *get_wine_path() {
     // if we've already found a wine installation, return that
@@ -31,32 +32,42 @@ const char *get_wine_path() {
         return (const char *)env_wine_path;
 
     // neither of these worked? let's go searching!
+    char wine_path_test[2048];
 
-    // first check for a homebrew-installed copy of Wine
-    if (rosetta_translated_process()) { // Apple Silicon uses a different path for Homebrew
-        if (access(Wine_Path_ASi, F_OK) == 0) {
-            printf("found homebrew wine (asi)\n");
-            wine_found = true;
-            strncpy(wine_path, Wine_Path_ASi, sizeof(wine_path));
-            return (const char *)wine_path;
-        }
-    } else {
-        if (access(Wine_Path_Intel, F_OK) == 0) {
-            printf("found homebrew wine (intel)\n");
-            wine_found = true;
-            strncpy(wine_path, Wine_Path_Intel, sizeof(wine_path));
-            return (const char *)wine_path;
-        }
+    // first check for a homebrew-installed copy of Wine with wine64
+    snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_Format, rosetta_translated_process() ? Homebrew_ASi : Homebrew_Intel, "wine64");
+    if (access(wine_path_test, F_OK) == 0) {
+        printf("found homebrew wine (wine64)\n");
+        wine_found = true;
+        strncpy(wine_path, wine_path_test, sizeof(wine_path));
+        return (const char *)wine_path;
     }
+
+    // then check for Wine 10.0+
+    snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_Format, rosetta_translated_process() ? Homebrew_ASi : Homebrew_Intel, "wine");
+    if (access(wine_path_test, F_OK) == 0) {
+        printf("found homebrew wine (wine)\n");
+        wine_found = true;
+        strncpy(wine_path, wine_path_test, sizeof(wine_path));
+        return (const char *)wine_path;
+    }
+
     // neither of these matched, so try to find an installed copy of Wine as an app bundle
     const char *wine_builds[3] = { "Stable", "Staging", "Development" };
-    char wine_path_test[2048];
     for (int i = 0; i < 3; i++)
     {
-        snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_AppFormat, wine_builds[i]);
-        printf("checking for wine %s...\n", wine_path_test);
+        // check wine64
+        snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_AppFormat, wine_builds[i], "wine64");
         if (access(wine_path_test, F_OK) == 0) {
-            printf("found app wine (%s)\n", wine_builds[i]);
+            printf("found app wine (%s, wine64)\n", wine_builds[i]);
+            wine_found = true;
+            strncpy(wine_path, wine_path_test, sizeof(wine_path));
+            return (const char *)wine_path;
+        }
+        // check wine
+        snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_AppFormat, wine_builds[i], "wine");
+        if (access(wine_path_test, F_OK) == 0) {
+            printf("found app wine (%s, wine)\n", wine_builds[i]);
             wine_found = true;
             strncpy(wine_path, wine_path_test, sizeof(wine_path));
             return (const char *)wine_path;
