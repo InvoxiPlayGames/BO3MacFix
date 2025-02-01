@@ -27,7 +27,7 @@
 #ifdef MACFIX_DEBUG
 #define Version_Prefix "[BO3MacFix DEBUG]"
 #else
-#define Version_Prefix "[BO3MacFix v1.1-beta]"
+#define Version_Prefix "[BO3MacFix " MACFIX_VERSION "]"
 #endif
 #define Error_Prefix "^7[^6BO3MacFix^7] "
 
@@ -341,6 +341,11 @@ static void network_version_patch() {
     // set the LPC category version to match PC
     uint32_t newcategory = 0x0528;
     DobbyCodePatch((void *)(game_base_address + ADDR_LPC_GetRemoteManifest_Category_Inst + 6), (uint8_t *)&newcategory, sizeof(uint32_t));
+    // set the CL version to match PC
+    uint8_t mov_eax = 0xB8;
+    int new_cl_version = 0xD3FC12;
+    DobbyCodePatch((void *)(game_base_address + ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall), &mov_eax, sizeof(uint8_t));
+    DobbyCodePatch((void *)(game_base_address + ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall + 1), (uint8_t *)&new_cl_version, sizeof(int));
 }
 
 void set_network_password(const char *password)
@@ -469,6 +474,7 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
 
     // so we can bundle support for workshop mods retroactively where the creator might not be able to / is unwilling to add a dylib
     // we check /BO3MacFix/natives/[dll name]-[dll hash].dylib
+    // NOTE(Emma): might want to change to [dll name]-[workshop id].dylib for workshop mods to avoid updates breaking it if changes are insignificant enough
     char test_native_path[1024];
     uint8_t file_sha1_hash[0x14];
     char file_sha1_hash_str[(0x14 * 2) + 1];

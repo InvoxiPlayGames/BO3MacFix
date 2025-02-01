@@ -37,4 +37,5 @@
 #define ADDR_Lua_CoD_LuaCall_GetProtocolVersion_Inst 0xE1FCA8 // mid-func
 #define ADDR_LPC_GetRemoteManifest_Category_Inst 0xEA8C04 // mid-func
 #define ADDR_Live_SystemInfo_LarpInstr 0x129dbcc // mid-func
+#define ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall 0x1232458 // mid-func
 // -- END OFFSETS

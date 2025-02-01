@@ -2,6 +2,7 @@
 *.dSYM
 assets
 release
+staging
 launcherv2
 natives
 AppBundleExe

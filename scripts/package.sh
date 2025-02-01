@@ -12,7 +12,7 @@ cp BO3MacFix.dylib staging/BO3MacFix/BO3MacFix.dylib
 cp installer/Install_BO3MacFix staging/BO3MacFix/Install_BO3MacFix
 cp launcher/AppBundleExe staging/BO3MacFix/AppBundleExe
 
-# copy the binary assets (c2m)
+# copy the binary assets (c2m, zone)
 echo Copying assets...
 cp -r assets/* staging/BO3MacFix
 

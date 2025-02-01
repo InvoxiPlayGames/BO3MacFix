@@ -132,8 +132,12 @@ bool is_macos_dylib(const char *path) {
         uint8_t file_magic[4] = {0};
         if (fread(file_magic, 1, 4, fp) == 4) {
             // 0xFEEDFACF - 64-bit Mach-O
-            static const uint8_t macho_header[4] = {0xcf, 0xfa, 0xed, 0xfe};
-            if (memcmp(file_magic, macho_header, 4) == 0)
+            static const uint8_t macho_header_64bit[4] = {0xcf, 0xfa, 0xed, 0xfe};
+            if (memcmp(file_magic, macho_header_64bit, 4) == 0)
+                return true;
+            // 0xCAFEBABE - fat Mach-O
+            static const uint8_t macho_header_fat[4] = {0xca, 0xfe, 0xba, 0xbe};
+            if (memcmp(file_magic, macho_header_fat, 4) == 0)
                 return true;
         }
         fclose(fp);
