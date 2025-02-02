@@ -15,7 +15,7 @@ CC       := $(CLANG) -isysroot $(SYSROOT) -arch $(ARCH) -mmacosx-version-min=$(O
 CFLAGS  = -O1 -Wall -g -I include/ -I src/ -fvisibility=hidden
 LDFLAGS = -shared -Wl,-undefined -Wl,dynamic_lookup -Llib -ldobby
 
-FRAMEWORKS = -framework CoreFoundation
+FRAMEWORKS = -framework CoreFoundation -framework IOKit
 
 SOURCES = source/bo3macfix.c source/bo3macnative.m source/utilities.c source/steam.c source/exports.c
 

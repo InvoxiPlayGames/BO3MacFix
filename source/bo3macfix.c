@@ -15,6 +15,9 @@
 #include <sys/mman.h>
 #include <sandbox.h>
 
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/hid/IOHIDDevice.h>
+
 #include "bo3macnative.h"
 #include "codhavoktypes.h"
 #include "dobby.h"
@@ -364,6 +367,41 @@ FILE *popen_new(const char *command, const char *mode) {
 }
 DYLD_INTERPOSE(system_new, system);
 DYLD_INTERPOSE(popen_new, popen);
+
+// this will get called in SDL2.0.7's FreeDevice, and not anywhere else, so it's safe
+void IOHIDDeviceUnscheduleFromRunLoop_new(IOHIDDeviceRef device, CFRunLoopRef runLoop, CFStringRef runLoopMode)
+{
+    IOHIDDeviceUnscheduleFromRunLoop(device, runLoop, runLoopMode);
+    // release the device ref as per https://github.com/libsdl-org/SDL/commit/65fd63369411240dd54cad74916c6a6739e9363b
+    //printf("releasing!\n");
+    CFRelease(device);
+}
+DYLD_INTERPOSE(IOHIDDeviceUnscheduleFromRunLoop_new, IOHIDDeviceUnscheduleFromRunLoop);
+
+// this will get called lots in SDL2.0.7's JoystickDeviceWasAddedCallback, so filter for PrimaryUsagePage
+CFTypeRef IOHIDDeviceGetProperty_hook(IOHIDDeviceRef device, CFStringRef key)
+{
+    CFTypeRef orig = IOHIDDeviceGetProperty(device, key);
+    // that address is the CFString for PrimaryUsagePage
+    if (orig != NULL && key == (void *)(game_base_address + 0x1b8b420))
+    { 
+        //printf("device = %p\n", device);
+        //printf("key = %p\n", key);
+        // get the actual usage to see if SDL2.0.7 would be retaining it anyway
+        uint32_t usage = 0;
+        if (CFNumberGetValue(orig, kCFNumberSInt32Type, &usage))
+        {
+            // kHIDUsage_GD_Joystick, kHIDUsage_GD_GamePad, kHIDUsage_GD_MultiAxisController
+            if ((usage < 9) && ((0x130U >> (usage & 0x1f) & 1) != 0)) {
+                //printf("controller! retaining\n");
+                // retain the device ref as per https://github.com/libsdl-org/SDL/commit/65fd63369411240dd54cad74916c6a6739e9363b
+                CFRetain(device);
+            }
+        }
+    }
+    return orig;
+}
+DYLD_INTERPOSE(IOHIDDeviceGetProperty_hook, IOHIDDeviceGetProperty);
 
 int sandbox_init_with_parameters(const char *profile, uint64_t flags, const char *const parameters[], char **errorbuf);
 

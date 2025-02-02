@@ -26,5 +26,5 @@ chmod 0755 staging/BO3MacFix/AppBundleExe
 mkdir release
 cd staging
 echo Compressing files...
-tar -czvf ../release/BO3MacFix.tar.gz BO3MacFix
+tar --no-mac-metadata --disable-copyfile --exclude='.DS_Store' -czvf ../release/BO3MacFix.tar.gz BO3MacFix
 cd ..
