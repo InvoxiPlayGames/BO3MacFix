@@ -202,12 +202,18 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     char physicsAltPath[0x200];
     snprintf(physicsPath, sizeof(physicsPath), "Physics/%s_navmesh.hkt", mapname);
     snprintf(physicsAltPath, sizeof(physicsAltPath), Macfix_Path "/Physics/%s_navmesh.hkt", mapname);
-    if (access(physicsPath, F_OK) != 0 && access(physicsAltPath, F_OK) != 0) {
+
+    // bees are broken on Demon Within - don't trust the original navmesh/navvolume
+    bool shouldFixBees = strcmp(mapname, "cp_mi_cairo_infection2") == 0;
+    if ((access(physicsPath, F_OK) != 0 || (access(physicsPath, F_OK) == 0 && shouldFixBees))
+        && access(physicsAltPath, F_OK) != 0) {
         if (get_wine_path() == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "You do not have Wine installed, so we can't convert the map '^2%s^7'.", mapname);
-        char full_path[0x200];
-        build_usermods_path(mapname, ".ff", 0x200, full_path, 2, (char *)(game_base_address + ADDR_g_workshopMapId));
-        printf("map fastfile is '%s'\n", full_path);
+        if (!shouldFixBees) {
+            char full_path[0x200];
+            build_usermods_path(mapname, ".ff", 0x200, full_path, 2, (char *)(game_base_address + ADDR_g_workshopMapId));
+            printf("map fastfile is '%s'\n", full_path);
+        }
 
         char xasset_path[0x200];
         snprintf(xasset_path, 0x200, "maps/%s/%s_navmesh", GetGamemodeString(), mapname);
@@ -378,11 +384,11 @@ void IOHIDDeviceUnscheduleFromRunLoop_new(IOHIDDeviceRef device, CFRunLoopRef ru
 }
 DYLD_INTERPOSE(IOHIDDeviceUnscheduleFromRunLoop_new, IOHIDDeviceUnscheduleFromRunLoop);
 
-// this will get called lots in SDL2.0.7's JoystickDeviceWasAddedCallback, so filter for PrimaryUsagePage
+// this will get called lots in SDL2.0.7's JoystickDeviceWasAddedCallback, so filter for PrimaryUsage
 CFTypeRef IOHIDDeviceGetProperty_hook(IOHIDDeviceRef device, CFStringRef key)
 {
     CFTypeRef orig = IOHIDDeviceGetProperty(device, key);
-    // that address is the CFString for PrimaryUsagePage
+    // that address is the CFString for PrimaryUsage
     if (orig != NULL && key == (void *)(game_base_address + 0x1b8b420))
     { 
         //printf("device = %p\n", device);
@@ -625,6 +631,10 @@ __attribute__((constructor)) static void dylib_main() {
     uint8_t curl_nops[(ADDR_Curl_ContentLengthSetEnd - ADDR_Curl_ContentLengthSetStart)];
     memset(curl_nops, 0x90, sizeof(curl_nops));
     DobbyCodePatch((void *)(game_base_address + ADDR_Curl_ContentLengthSetStart), curl_nops, sizeof(curl_nops));
+
+    // replace the strcmp where HKAI_InitMapData checks to see if the map name is cp_mi_cairo_infection2
+    uint8_t return_0[] = { 0xB8, 0, 0, 0, 0};
+    DobbyCodePatch((void *)(game_base_address + ADDR_HKAI_InitMapData_DemonWithinCheck), return_0, sizeof(return_0));
 
     // patches the network version to match Windows
     network_version_patch();

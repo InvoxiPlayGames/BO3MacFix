@@ -38,4 +38,5 @@
 #define ADDR_LPC_GetRemoteManifest_Category_Inst 0xEA8C04 // mid-func
 #define ADDR_Live_SystemInfo_LarpInstr 0x129dbcc // mid-func
 #define ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall 0x1232458 // mid-func
+#define ADDR_HKAI_InitMapData_DemonWithinCheck 0xe09f68 // mid-func
 // -- END OFFSETS
