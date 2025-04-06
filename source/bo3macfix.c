@@ -142,11 +142,30 @@ install_hook_name(someLoggingFunction, void, int bla, int bla2, char *str, int b
     return;
 }
 
+/*
 // Hooks some early window creation function to set the window title to ours
 install_hook_name(someWindowCreationFunction, bool, void *r3, int r4) {
     bool r = orig_someWindowCreationFunction(r3, r4);
     set_window_title("Call of Duty: Black Ops III (with BO3MacFix)");
     return r;
+}
+*/
+
+// Hooks the SDL window title setting function
+bool added_menu_bar = false;
+install_hook_name(SDL_SetWindowTitle, void, void *sdlWindow, const char *title)
+{
+    // verify the window title we're setting is the main game window
+    if (strcmp("Call of Duty: Black Ops III", title) == 0)
+    {
+        title = "Call of Duty: Black Ops III (with BO3MacFix)";
+        set_window_title(title);
+        if (added_menu_bar == false) {
+            //add_menu_bar();
+            added_menu_bar = true;
+        }
+    }
+    orig_SDL_SetWindowTitle(sdlWindow, title);
 }
 
 // Adds the version of our mod to the version info in the corner
@@ -470,7 +489,19 @@ bool ISteamApps_BIsDlcInstalled(void *interface, AppId_t app) {
     return steam_dlc_installed(app);
 }
 
+char playerNameBuffer[17] = {0};
+void set_player_name(const char *name) {
+    strncpy(playerNameBuffer, name, sizeof(playerNameBuffer));
+}
+const char *get_player_name() {
+    return playerNameBuffer;
+}
+
 const char *ISteamFriends_GetPersonaName(void *interface) {
+    // check the player name set dynamically first
+    if (playerNameBuffer[0] != '\0' && strlen(playerNameBuffer) >= 1 && strlen(playerNameBuffer) <= 16)
+        return playerNameBuffer;
+    // then check the player name
     const char *envname = getenv("BO3MACFIX_PLAYERNAME");
     if (envname != NULL && strlen(envname) >= 1 && strlen(envname) <= 16)
         return envname;
@@ -577,7 +608,8 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_load_workshop_texture((void *)(game_base_address + ADDR_load_workshop_texture));
     install_hook_Live_SystemInfo((void *)(game_base_address + ADDR_Live_SystemInfo));
     install_hook_someLoggingFunction((void *)(game_base_address + ADDR_someLoggingFunction));
-    install_hook_someWindowCreationFunction((void *)(game_base_address + ADDR_someWindowCreationFunction));
+    //install_hook_someWindowCreationFunction((void *)(game_base_address + ADDR_someWindowCreationFunction));
+    install_hook_SDL_SetWindowTitle((void *)(game_base_address + ADDR_SDL_SetWindowTitle));
     install_hook_Sys_VerifyPacketChecksum((void *)(game_base_address + ADDR_Sys_VerifyPacketChecksum));
     install_hook_Sys_CheckSumPacketCopy((void *)(game_base_address + ADDR_Sys_CheckSumPacketCopy));
     install_hook_LobbyMsgRW_PrepReadMsg((void *)(game_base_address + ADDR_LobbyMsgRW_PrepReadMsg));
