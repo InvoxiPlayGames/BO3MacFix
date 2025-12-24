@@ -591,6 +591,32 @@ install_hook_name(Com_GetBuildIntField, int, int field) {
     return orig_Com_GetBuildIntField(field);
 }
 
+static int (*SDL_PrivateGameControllerAddMapping)(const char *mappingString, int priority);
+
+// WIP(Emma): unfinished support for adding extra SDL controller mappings
+static const char *extraGamepadMappings[] = {
+    "030000004c050000a00b000000010000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000c405000000000000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000c405000000010000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000cc09000000010000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "050000004c050000e60c000000010000,PS5 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,misc1:b13,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000cc09000000000000,Sony DualShock 4 V2,a:b1,b:b2,back:b13,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000a00b000000000000,Sony DualShock 4 Wireless Adaptor,a:b1,b:b2,back:b13,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    NULL
+};
+install_hook_name(SDL_GameControllerInitMappings, int, void)
+{
+    int r = orig_SDL_GameControllerInitMappings();
+    int i = 0;
+    const char *pMappingString = extraGamepadMappings[i];
+    while (pMappingString) {
+        SDL_PrivateGameControllerAddMapping(pMappingString, 0);
+        i++;
+        pMappingString = extraGamepadMappings[i];
+    }
+    return r;
+}
+
 // Entrypoint for the dylib
 __attribute__((constructor)) static void dylib_main() {
     // make sure we're loading into the game process and nothing else
@@ -621,6 +647,7 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
     install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
     install_hook_Com_GetBuildIntField((void *)(game_base_address + ADDR_Com_GetBuildIntField));
+    //install_hook_SDL_GameControllerInitMappings((void *)(game_base_address + ADDR_SDL_GameControllerInitMappings));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
@@ -630,6 +657,7 @@ __attribute__((constructor)) static void dylib_main() {
     Sys_Checksum = (void *)(game_base_address + ADDR_Sys_Checksum);
     MSG_ReadByte = (void *)(game_base_address + ADDR_MSG_ReadByte);
     MSG_WriteByte = (void *)(game_base_address + ADDR_MSG_WriteByte);
+    SDL_PrivateGameControllerAddMapping = (void *)(game_base_address + ADDR_SDL_PrivateGameControllerAddMapping);
 
     // disable setting a fatal error in Scr_ErrorInternal, Aspyr forces it to always be true
     uint8_t error_patch[1] = { 0x00 };

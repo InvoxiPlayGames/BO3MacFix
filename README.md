@@ -13,10 +13,12 @@ by Emma / InvoxiPlayGames and Anthony / serious.
 
 ## Credits
 
-- [Anthony / serious](https://github.com/shiversoftdev) - guidance, help, t7patch and the cod2map64 patch DLL.
+- [Alyssa / alltheamps](https://github.com/shiversoftdev) - guidance, help, t7patch and the cod2map64 patch DLL.
 - [The Dobby project](https://github.com/jmpews/Dobby) - code hooking on macOS. (used under the MIT license)
 
 ## What does it do? (Nerd stuff)
+
+### Custom Maps
 
 There are two big issues with Steam Workshop map loading in the current (v98, from 2019) Mac build of BO3:
 
@@ -29,8 +31,13 @@ modding SDK. We call Wine from within the native Mac game process to call upon t
 a snapshot of the Havok navmesh/navvolume data from the map, and the patch to the SDK's cod2map tool takes
 that input and outputs in the Mac-encoded format.
 
-A macOS update also updated the version of libcurl that was included with the OS, which makes online login
-fail in Black Ops 3 due to improper usage of the cURL library that's technically "undefined behaviour". This
+A campaign mission with broken navigation meshes is also fixed in the same way.
+
+### Online Play
+
+A macOS update updated the version of libcurl that was included with the OS, which makes online login fail
+in Black Ops 3 due to improper usage of the cURL library that's technically "undefined behaviour". This
 is fixed here by removing one of the HTTP headers the game manually sets and letting cURL do its thing.
+
 Version numbers are spoofed when signing in to match the Windows version's to enable matchmaking between the
-two.
+two, along with using updated scripts and assets from the Windows version.
