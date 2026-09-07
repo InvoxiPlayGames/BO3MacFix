@@ -1,4 +1,5 @@
 TARGET = BO3MacFix.dylib
+TEST_TARGET = tests/test_stream_stall_recovery
 
 DEBUG   ?= 0
 ARCH    ?= x86_64
@@ -17,12 +18,20 @@ LDFLAGS = -shared -Wl,-undefined -Wl,dynamic_lookup -Llib -ldobby
 
 FRAMEWORKS = -framework CoreFoundation -framework IOKit
 
-SOURCES = source/bo3macfix.c source/bo3macnative.m source/utilities.c source/steam.c source/exports.c
+SOURCES = source/bo3macfix.c source/bo3macnative.m source/stream_stall_recovery.c source/utilities.c source/steam.c source/exports.c
 
 all: $(TARGET)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): tests/test_stream_stall_recovery.c source/stream_stall_recovery.c source/stream_stall_recovery.h
+	$(CLANG) -std=c11 -O1 -Wall -Wextra -Werror -o $@ tests/test_stream_stall_recovery.c source/stream_stall_recovery.c
 
 $(TARGET): $(SOURCES)
 	$(CC) $(CFLAGS) $(FRAMEWORKS) $(DEFINES) $(LDFLAGS) -o $@ $(SOURCES)
 
 clean:
-	rm -f -- $(TARGET)
+	rm -f -- $(TARGET) $(TEST_TARGET)
+
+.PHONY: all clean test

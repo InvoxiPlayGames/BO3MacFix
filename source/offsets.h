@@ -23,6 +23,8 @@
 #define ADDR_hks_load_dll 0x148460d // func
 #define ADDR_hksf_fopen_internal 0xfb503 // func - name is a guess, called by hksf_fopen
 #define ADDR_CL_FirstSnapshot 0xe2f0be // func
+#define ADDR_CL_SetCGameTime 0xe2fbe8 // func
+#define ADDR_DB_GetStreamFraction 0x127c182 // func - name is a guess
 #define ADDR_Com_GetBuildIntField 0xf16d9a // func
 #define ADDR_SDL_SetWindowTitle 0x1944d0 // func
 #define ADDR_LiveSteam_RunEveryFrame 0x1434f3e // func
@@ -35,6 +37,13 @@
 #define ADDR_g_workshopMapId 0x3087dac // char[] - name is a guess
 #define ADDR_g_emuPath 0x4ae9c00 // char[] - name is a guess
 #define ADDR_sSessionModeState 0x6939a14 // int
+#define ADDR_DB_LOAD_TOTALS 0xb2b81c0 // int[4]
+#define ADDR_DB_LOAD_STAGE_COUNT 0xb2b81d0 // int
+#define ADDR_DB_LOAD_COMPLETED 0xb2b81e0 // int[4]
+#define ADDR_CLIENT_CONNECTIONS 0x115324a0 // client connection array
+#define ADDR_LOCAL_CLIENT_COUNT 0x11534590 // int
+#define ADDR_LOCAL_CLIENTS 0x11534598 // pointer
+#define ADDR_CLIENT_GLOBALS 0x115345a0 // pointer
 
 //function patches
 #define ADDR_Scr_ErrorInternalPatch 0x11a238e // mid-func

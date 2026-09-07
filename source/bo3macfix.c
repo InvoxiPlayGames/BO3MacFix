@@ -5,7 +5,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <ctype.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include "dyld-interposing.h"
@@ -24,6 +26,7 @@
 #include "utilities.h"
 #include "offsets.h"
 #include "steam.h"
+#include "stream_stall_recovery.h"
 
 #include "versioninfo.h"
 
@@ -211,6 +214,158 @@ install_hook_name(dwInstantDispatchMessage, bool, uint64_t userId, int controlle
     return orig_dwInstantDispatchMessage(userId, controllerIndex, data, datalen);
 }
 
+#define CLIENT_CONNECTION_STRIDE 0x1078
+#define CLIENT_CONNECTION_STATE_OFFSET 0x8
+#define LOCAL_CLIENT_STRIDE 0x197a40
+#define CLIENT_GLOBAL_STRIDE 0x25780
+#define SNAPSHOT_FLAGS_OFFSET 0x94
+#define SNAPSHOT_TIME_OFFSET 0x98
+#define NEW_SNAPSHOTS_OFFSET 0xb680
+#define STREAM_READY_OFFSET 0x2454d
+#define CONNECTION_STATE_PRIMED 10
+
+static atomic_bool stream_recovery_eligible;
+static StreamRecoveryLifecycle stream_recovery_lifecycle =
+    STREAM_RECOVERY_LIFECYCLE_INITIALIZER;
+static StreamStallMonitor stream_stall_monitor = {0};
+
+static bool monotonic_milliseconds(uint64_t *milliseconds) {
+    struct timespec timestamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0)
+        return false;
+
+    *milliseconds = (uint64_t)timestamp.tv_sec * 1000ULL +
+        (uint64_t)timestamp.tv_nsec / 1000000ULL;
+    return true;
+}
+
+static bool db_load_stages_complete(void) {
+    int stage_count = *(int *)(game_base_address + ADDR_DB_LOAD_STAGE_COUNT);
+    if (stage_count < 1 || stage_count > 4)
+        return false;
+
+    int *totals = (int *)(game_base_address + ADDR_DB_LOAD_TOTALS);
+    int *completed = (int *)(game_base_address + ADDR_DB_LOAD_COMPLETED);
+    bool saw_work = false;
+
+    for (int i = 0; i < stage_count; ++i) {
+        if (totals[i] > 0)
+            saw_work = true;
+        if (completed[i] < totals[i])
+            return false;
+    }
+
+    return saw_work;
+}
+
+static void begin_stream_recovery_load(bool eligible) {
+    atomic_store(&stream_recovery_eligible, eligible);
+    stream_recovery_begin_load(&stream_recovery_lifecycle);
+}
+
+install_hook_name(DB_GetStreamFraction, float, void) {
+    float fraction = orig_DB_GetStreamFraction();
+    if (stream_recovery_is_complete(&stream_recovery_lifecycle))
+        return 1.0f;
+    return fraction;
+}
+
+static void reset_stream_stall_observation(void) {
+    if (stream_stall_monitor.observing)
+        stream_stall_recovery_reset(&stream_stall_monitor);
+}
+
+static void update_stream_stall_recovery(int localClientNum) {
+    static unsigned int observed_generation = 0;
+    unsigned int generation = stream_recovery_current_generation(
+        &stream_recovery_lifecycle);
+    if (observed_generation != generation) {
+        stream_stall_recovery_reset(&stream_stall_monitor);
+        observed_generation = generation;
+    }
+
+    if (!atomic_load(&stream_recovery_eligible) ||
+        stream_recovery_is_complete(&stream_recovery_lifecycle))
+        return;
+
+    // Stream completion is global. Only the primary client owns its timer.
+    if (localClientNum != 0)
+        return;
+
+    int local_client_count = *(int *)(game_base_address + ADDR_LOCAL_CLIENT_COUNT);
+    if (localClientNum < 0 || localClientNum >= local_client_count) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *connection = (uint8_t *)(game_base_address +
+        ADDR_CLIENT_CONNECTIONS +
+        ((size_t)localClientNum * CLIENT_CONNECTION_STRIDE));
+    if (*(int *)(connection + CLIENT_CONNECTION_STATE_OFFSET) !=
+        CONNECTION_STATE_PRIMED) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *local_clients = *(uint8_t **)(
+        game_base_address + ADDR_LOCAL_CLIENTS);
+    uint8_t *client_globals = *(uint8_t **)(
+        game_base_address + ADDR_CLIENT_GLOBALS);
+    if (local_clients == NULL || client_globals == NULL) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *local_client = local_clients +
+        ((size_t)localClientNum * LOCAL_CLIENT_STRIDE);
+    uint8_t *globals = client_globals +
+        ((size_t)localClientNum * CLIENT_GLOBAL_STRIDE);
+    uint8_t snapshot_flags = *(uint8_t *)(
+        local_client + SNAPSHOT_FLAGS_OFFSET);
+    bool valid_snapshot =
+        *(int *)(local_client + NEW_SNAPSHOTS_OFFSET) != 0 &&
+        *(int *)(local_client + SNAPSHOT_TIME_OFFSET) > 0 &&
+        (snapshot_flags & 0x02) == 0;
+
+    if (!valid_snapshot ||
+        *(uint8_t *)(globals + STREAM_READY_OFFSET) != 0 ||
+        !db_load_stages_complete()) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint64_t now_ms;
+    if (!monotonic_milliseconds(&now_ms)) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    StreamStallInput input = {
+        .eligible_custom_map = true,
+        .connection_primed = true,
+        .valid_snapshot = true,
+        .db_load_complete = true,
+        .engine_ready = false,
+        .stream_fraction = orig_DB_GetStreamFraction(),
+        .now_ms = now_ms,
+    };
+
+    if (stream_stall_recovery_update(&stream_stall_monitor, &input) &&
+        stream_recovery_try_complete(
+            &stream_recovery_lifecycle,
+            generation)) {
+        printf("BO3MacFix: stream loading for a custom map stalled "
+               "at %.6f for %llu ms; treating it as complete.\n",
+               input.stream_fraction,
+               STREAM_STALL_TIMEOUT_MS);
+    }
+}
+
+install_hook_name(CL_SetCGameTime, void, int localClientNum) {
+    update_stream_stall_recovery(localClientNum);
+    orig_CL_SetCGameTime(localClientNum);
+}
+
 // Initialises the navmesh and navvolume for the map.
 // If we haven't made conversions already, call our conversion tool's binary.
 #define C2M_Path Macfix_Path "/cod2map/cod2map64.exe"
@@ -221,10 +376,15 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     char physicsAltPath[0x200];
     snprintf(physicsPath, sizeof(physicsPath), "Physics/%s_navmesh.hkt", mapname);
     snprintf(physicsAltPath, sizeof(physicsAltPath), Macfix_Path "/Physics/%s_navmesh.hkt", mapname);
+    bool native_physics_missing = access(physicsPath, F_OK) != 0;
+
+    // Missing native physics identifies maps whose Windows assets BO3MacFix
+    // converts at runtime. Limit stream-stall recovery to those custom maps.
+    begin_stream_recovery_load(native_physics_missing);
 
     // bees are broken on Demon Within - don't trust the original navmesh/navvolume
     bool shouldFixBees = strcmp(mapname, "cp_mi_cairo_infection2") == 0;
-    if ((access(physicsPath, F_OK) != 0 || (access(physicsPath, F_OK) == 0 && shouldFixBees))
+    if ((native_physics_missing || shouldFixBees)
         && access(physicsAltPath, F_OK) != 0) {
         if (get_wine_path() == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "You do not have Wine installed, so we can't convert the map '^2%s^7'.", mapname);
@@ -646,6 +806,8 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_hks_load_dll((void *)(game_base_address + ADDR_hks_load_dll));
     install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
     install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
+    install_hook_DB_GetStreamFraction((void *)(game_base_address + ADDR_DB_GetStreamFraction));
+    install_hook_CL_SetCGameTime((void *)(game_base_address + ADDR_CL_SetCGameTime));
     install_hook_Com_GetBuildIntField((void *)(game_base_address + ADDR_Com_GetBuildIntField));
     //install_hook_SDL_GameControllerInitMappings((void *)(game_base_address + ADDR_SDL_GameControllerInitMappings));
 
