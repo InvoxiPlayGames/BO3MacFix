@@ -1,30 +1,20 @@
 #!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 
-# prepare the staging folder
-echo Preparing folder...
-rm -rf staging
-mkdir staging
-mkdir staging/BO3MacFix
+version="$(sed -n 's/#define MACFIX_VERSION "\(.*\)"/\1/p' source/versioninfo.h)"
+archive="release/BO3MacFix-$version.tar.gz"
 
-# copy our compiled binaries
-echo Copying binaries...
-cp BO3MacFix.dylib staging/BO3MacFix/BO3MacFix.dylib
-cp installer/Install_BO3MacFix staging/BO3MacFix/Install_BO3MacFix
-cp launcher/AppBundleExe staging/BO3MacFix/AppBundleExe
+make
+make -C installer
+make test
 
-# copy the binary assets (c2m, zone)
-echo Copying assets...
-cp -r assets/* staging/BO3MacFix
-
-# set the permissions permissions
-echo Setting permissions...
+rm -rf staging release
+mkdir -p staging/BO3MacFix release
+cp BO3MacFix.dylib installer/Install_BO3MacFix launcher/launch-bo3macfix staging/BO3MacFix/
 chmod 0644 staging/BO3MacFix/BO3MacFix.dylib
-chmod 0755 staging/BO3MacFix/Install_BO3MacFix
-chmod 0755 staging/BO3MacFix/AppBundleExe
+chmod 0755 staging/BO3MacFix/Install_BO3MacFix staging/BO3MacFix/launch-bo3macfix
 
-# make a release tgz file
-mkdir release
-cd staging
-echo Compressing files...
-tar --no-mac-metadata --disable-copyfile --exclude='.DS_Store' -czvf ../release/BO3MacFix.tar.gz BO3MacFix
-cd ..
+(cd staging && tar --no-mac-metadata --disable-copyfile --exclude='.DS_Store' -czf "../$archive" BO3MacFix)
+(cd release && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+cat "$archive.sha256"

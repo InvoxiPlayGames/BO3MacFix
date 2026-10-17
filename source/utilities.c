@@ -21,6 +21,7 @@ static bool wine_found = false;
 #define Homebrew_Intel "/usr/local"
 #define Wine_Path_Format "%s/bin/%s"
 #define Wine_Path_AppFormat "/Applications/Wine %s.app/Contents/Resources/wine/bin/%s"
+#define Bundled_Wine_Path "../../../BO3MacFix/wine/Wine Stable.app/Contents/Resources/wine/bin/wine"
 
 const char *get_wine_path() {
     // if we've already found a wine installation, return that
@@ -33,6 +34,13 @@ const char *get_wine_path() {
 
     // neither of these worked? let's go searching!
     char wine_path_test[2048];
+
+    if (realpath(Bundled_Wine_Path, wine_path_test) != NULL && access(wine_path_test, X_OK) == 0) {
+        printf("found bundled wine\n");
+        wine_found = true;
+        strncpy(wine_path, wine_path_test, sizeof(wine_path));
+        return (const char *)wine_path;
+    }
 
     // first check for a homebrew-installed copy of Wine with wine64
     snprintf(wine_path_test, sizeof(wine_path_test), Wine_Path_Format, rosetta_translated_process() ? Homebrew_ASi : Homebrew_Intel, "wine64");
@@ -133,12 +141,11 @@ bool is_macos_dylib(const char *path) {
         if (fread(file_magic, 1, 4, fp) == 4) {
             // 0xFEEDFACF - 64-bit Mach-O
             static const uint8_t macho_header_64bit[4] = {0xcf, 0xfa, 0xed, 0xfe};
-            if (memcmp(file_magic, macho_header_64bit, 4) == 0)
-                return true;
             // 0xCAFEBABE - fat Mach-O
             static const uint8_t macho_header_fat[4] = {0xca, 0xfe, 0xba, 0xbe};
-            if (memcmp(file_magic, macho_header_fat, 4) == 0)
-                return true;
+            bool is_macho = memcmp(file_magic, macho_header_64bit, 4) == 0 || memcmp(file_magic, macho_header_fat, 4) == 0;
+            fclose(fp);
+            return is_macho;
         }
         fclose(fp);
     }

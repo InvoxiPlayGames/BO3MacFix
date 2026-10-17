@@ -15,9 +15,9 @@ CC       := $(CLANG) -isysroot $(SYSROOT) -arch $(ARCH) -mmacosx-version-min=$(O
 CFLAGS  = -O1 -Wall -g -I include/ -I src/
 LDFLAGS = 
 
-FRAMEWORKS = -framework CoreFoundation -framework Foundation
+FRAMEWORKS = -framework CoreFoundation
 
-SOURCES = installer.c utilities.c native.m
+SOURCES = installer.c download.c wine.c assets.c vdf.c steam_launch.c
 
 all: $(TARGET)
 

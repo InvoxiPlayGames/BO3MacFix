@@ -8,12 +8,14 @@
 #include <ctype.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
+#include <mach-o/loader.h>
 #include "dyld-interposing.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
 #include <sandbox.h>
+#include <signal.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/hid/IOHIDDevice.h>
@@ -133,11 +135,24 @@ install_hook_name(load_workshop_texture, void *, const char *path) {
     return NULL;
 }
 
+static FILE *game_log_file = NULL;
+
+static void open_game_log(void) {
+    const char *log_path = getenv("BO3MACFIX_LOGFILE");
+    if (log_path == NULL || log_path[0] == '\0')
+        return;
+    game_log_file = fopen(log_path, "a");
+    if (game_log_file != NULL)
+        setvbuf(game_log_file, NULL, _IOLBF, 0);
+}
+
 // Prints out logs to stdout that would normally go in the logging window
 install_hook_name(someLoggingFunction, void, int bla, int bla2, char *str, int bla3) {
 #ifdef MACFIX_DEBUG
     printf("%s", str);
 #endif
+    if (game_log_file != NULL && str != NULL)
+        fputs(str, game_log_file);
     orig_someLoggingFunction(bla, bla2, str, bla3);
     return;
 }
@@ -287,7 +302,7 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
         char cwd[1025];
         char wine_path[3075];
         getcwd(cwd, sizeof(cwd));
-        snprintf(wine_path, sizeof(wine_path), "\"%s\" " C2M_Path " -mac_navmesh \"Z:%s/" Macfix_Path "/Physics/convert.clump\" \"Z:%s/" Macfix_Path "/Physics/%s\"", get_wine_path(), cwd, cwd, mapname);
+        snprintf(wine_path, sizeof(wine_path), "WINEDEBUG=-all WINEDLLOVERRIDES=\"mscoree,mshtml=\" \"%s\" " C2M_Path " -mac_navmesh \"Z:%s/" Macfix_Path "/Physics/convert.clump\" \"Z:%s/" Macfix_Path "/Physics/%s\"", get_wine_path(), cwd, cwd, mapname);
         printf("executing: %s\n", wine_path);
         unsetenv("DYLD_INSERT_LIBRARIES"); // stop steam from fucking with our wine
         FILE *convert = popen(wine_path, "r");
@@ -393,12 +408,24 @@ FILE *popen_new(const char *command, const char *mode) {
 DYLD_INTERPOSE(system_new, system);
 DYLD_INTERPOSE(popen_new, popen);
 
+static uint64_t game_text_size = 0;
+static CFMutableSetRef retained_hid_devices = NULL;
+
+static bool called_from_game(const void *return_address) {
+    uint64_t address = (uint64_t)return_address;
+    return game_base_address != 0 && address >= game_base_address && address < game_base_address + game_text_size;
+}
+
 // this will get called in SDL2.0.7's FreeDevice, and not anywhere else, so it's safe
 void IOHIDDeviceUnscheduleFromRunLoop_new(IOHIDDeviceRef device, CFRunLoopRef runLoop, CFStringRef runLoopMode)
 {
     IOHIDDeviceUnscheduleFromRunLoop(device, runLoop, runLoopMode);
+    if (!called_from_game(__builtin_return_address(0)) || retained_hid_devices == NULL)
+        return;
+    if (!CFSetContainsValue(retained_hid_devices, device))
+        return;
+    CFSetRemoveValue(retained_hid_devices, device);
     // release the device ref as per https://github.com/libsdl-org/SDL/commit/65fd63369411240dd54cad74916c6a6739e9363b
-    //printf("releasing!\n");
     CFRelease(device);
 }
 DYLD_INTERPOSE(IOHIDDeviceUnscheduleFromRunLoop_new, IOHIDDeviceUnscheduleFromRunLoop);
@@ -408,19 +435,19 @@ CFTypeRef IOHIDDeviceGetProperty_hook(IOHIDDeviceRef device, CFStringRef key)
 {
     CFTypeRef orig = IOHIDDeviceGetProperty(device, key);
     // that address is the CFString for PrimaryUsage
-    if (orig != NULL && key == (void *)(game_base_address + 0x1b8b420))
+    if (orig != NULL && key == (void *)(game_base_address + 0x1b8b420) && called_from_game(__builtin_return_address(0))
+        && CFGetTypeID(orig) == CFNumberGetTypeID())
     { 
-        //printf("device = %p\n", device);
-        //printf("key = %p\n", key);
         // get the actual usage to see if SDL2.0.7 would be retaining it anyway
         uint32_t usage = 0;
         if (CFNumberGetValue(orig, kCFNumberSInt32Type, &usage))
         {
             // kHIDUsage_GD_Joystick, kHIDUsage_GD_GamePad, kHIDUsage_GD_MultiAxisController
-            if ((usage < 9) && ((0x130U >> (usage & 0x1f) & 1) != 0)) {
-                //printf("controller! retaining\n");
+            if ((usage < 9) && ((0x130U >> (usage & 0x1f) & 1) != 0)
+                && retained_hid_devices != NULL && !CFSetContainsValue(retained_hid_devices, device)) {
                 // retain the device ref as per https://github.com/libsdl-org/SDL/commit/65fd63369411240dd54cad74916c6a6739e9363b
                 CFRetain(device);
+                CFSetAddValue(retained_hid_devices, device);
             }
         }
     }
@@ -564,7 +591,7 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
     }
 
     // display an alert message (that makes sense) to the user informing them that the DLL load has failed
-    if (!is_macos_dylib(newpath) && !shown_dll_warning) {
+    if (access(newpath, F_OK) == 0 && !is_macos_dylib(newpath) && !shown_dll_warning) {
         printf("which isn't a macOS dylib, erroring...\n");
         char alert_msg[1024];
         snprintf(alert_msg, sizeof(alert_msg), "The mod you loaded tried to open a Windows DLL file. The game might work fine, but it might be unstable.\n\n%s: %s", filename_from_path(newpath), func_name);
@@ -599,6 +626,9 @@ static const char *extraGamepadMappings[] = {
     "030000004c050000c405000000000000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
     "030000004c050000c405000000010000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
     "030000004c050000cc09000000010000,PS4 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000e60c000000010000,PS5 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,misc1:b13,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000e60c000000000000,PS5 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,misc1:b13,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
+    "030000004c050000f20d000000010000,PS5 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,misc1:b13,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
     "050000004c050000e60c000000010000,PS5 Controller,a:b1,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,misc1:b13,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
     "030000004c050000cc09000000000000,Sony DualShock 4 V2,a:b1,b:b2,back:b13,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
     "030000004c050000a00b000000000000,Sony DualShock 4 Wireless Adaptor,a:b1,b:b2,back:b13,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b4,leftstick:b10,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b11,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b0,y:b3,",
@@ -610,11 +640,31 @@ install_hook_name(SDL_GameControllerInitMappings, int, void)
     int i = 0;
     const char *pMappingString = extraGamepadMappings[i];
     while (pMappingString) {
-        SDL_PrivateGameControllerAddMapping(pMappingString, 0);
+        int added = SDL_PrivateGameControllerAddMapping(pMappingString, 0);
+        if (game_log_file != NULL)
+            fprintf(game_log_file, Version_Prefix " controller mapping %.32s result %i\n", pMappingString, added);
         i++;
         pMappingString = extraGamepadMappings[i];
     }
     return r;
+}
+
+static const uint8_t supported_game_uuid[16] = {
+    0x3C, 0x8E, 0xC6, 0x70, 0xCC, 0xAC, 0x3F, 0xB4, 0xB3, 0x03, 0x50, 0xAC, 0x35, 0x6E, 0x84, 0x5F
+};
+
+static bool game_build_is_supported(void) {
+    const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (header == NULL || header->magic != MH_MAGIC_64)
+        return false;
+    const uint8_t *command = (const uint8_t *)(header + 1);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        const struct load_command *load = (const struct load_command *)command;
+        if (load->cmd == LC_UUID)
+            return memcmp(((const struct uuid_command *)load)->uuid, supported_game_uuid, sizeof(supported_game_uuid)) == 0;
+        command += load->cmdsize;
+    }
+    return false;
 }
 
 // Entrypoint for the dylib
@@ -626,8 +676,19 @@ __attribute__((constructor)) static void dylib_main() {
     if (strcmp(image_name, "CoDBlkOps3_Exe") != 0)
         return;
 
+    open_game_log();
+    signal(SIGPIPE, SIG_IGN);
+
+    if (!game_build_is_supported()) {
+        fprintf(stderr, Version_Prefix " unsupported game executable, no patches applied\n");
+        display_nsalert_async("BO3MacFix", "This version of Black Ops III is not supported by BO3MacFix " MACFIX_VERSION ". The game runs without the fix.");
+        return;
+    }
+
     // get the base address of the binary
     game_base_address = get_base_address();
+    game_text_size = getsegbyname("__TEXT")->vmsize;
+    retained_hid_devices = CFSetCreateMutable(kCFAllocatorDefault, 0, NULL);
 
     // apply the hooks
     install_hook_HKAI_InitMapData((void *)(game_base_address + ADDR_HKAI_InitMapData));
@@ -647,7 +708,7 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
     install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
     install_hook_Com_GetBuildIntField((void *)(game_base_address + ADDR_Com_GetBuildIntField));
-    //install_hook_SDL_GameControllerInitMappings((void *)(game_base_address + ADDR_SDL_GameControllerInitMappings));
+    install_hook_SDL_GameControllerInitMappings((void *)(game_base_address + ADDR_SDL_GameControllerInitMappings));
 
     // set up functions that we later call
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);

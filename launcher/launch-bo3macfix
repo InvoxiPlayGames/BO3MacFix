@@ -1,0 +1,27 @@
+#!/bin/sh
+fix_directory="$(cd "$(dirname "$0")" && pwd)"
+game_app="$(dirname "$fix_directory")/CoDBlkOps3.app"
+log_file="$fix_directory/launch.log"
+
+inserted_libraries="$fix_directory/BO3MacFix.dylib"
+if [ -n "$DYLD_INSERT_LIBRARIES" ]; then
+    inserted_libraries="$inserted_libraries:$DYLD_INSERT_LIBRARIES"
+fi
+
+{
+    echo "$(date '+%Y-%m-%d %H:%M:%S') launching $game_app"
+    echo "arguments: $*"
+} > "$log_file"
+
+set -- --env "DYLD_INSERT_LIBRARIES=$inserted_libraries" \
+    --env "SteamAppId=${SteamAppId:-311210}" \
+    --env "SteamGameId=${SteamGameId:-311210}" \
+    --env "WINEPREFIX=$fix_directory/pfx"
+if [ -n "$BO3MACFIX_LOGFILE" ]; then
+    set -- "$@" --env "BO3MACFIX_LOGFILE=$BO3MACFIX_LOGFILE"
+fi
+if [ -f "$fix_directory/enable-game-log" ]; then
+    set -- "$@" --env "BO3MACFIX_LOGFILE=$fix_directory/game.log"
+fi
+
+exec /usr/bin/open -W "$@" "$game_app"

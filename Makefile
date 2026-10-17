@@ -17,12 +17,22 @@ LDFLAGS = -shared -Wl,-undefined -Wl,dynamic_lookup -Llib -ldobby
 
 FRAMEWORKS = -framework CoreFoundation -framework IOKit
 
-SOURCES = source/bo3macfix.c source/bo3macnative.m source/utilities.c source/steam.c source/exports.c
+SOURCES = source/bo3macfix.c source/bo3macnative.m source/utilities.c source/steam.c source/exports.c source/localhost.c
+
+TEST_TARGET = tests/test_vdf
 
 all: $(TARGET)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): tests/test_vdf.c installer/vdf.c installer/vdf.h
+	$(CLANG) -std=gnu11 -O1 -Wall -Wextra -Werror -o $@ tests/test_vdf.c installer/vdf.c
 
 $(TARGET): $(SOURCES)
 	$(CC) $(CFLAGS) $(FRAMEWORKS) $(DEFINES) $(LDFLAGS) -o $@ $(SOURCES)
 
 clean:
-	rm -f -- $(TARGET)
+	rm -f -- $(TARGET) $(TEST_TARGET)
+
+.PHONY: all clean test

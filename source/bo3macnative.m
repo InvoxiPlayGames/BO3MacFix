@@ -91,3 +91,14 @@ void display_nsalert(const char *title, const char *message) {
         usleep(1000);
     }
 }
+
+void display_nsalert_async(const char *title, const char *message) {
+    NSString *titleString = [NSString stringWithUTF8String:title];
+    NSString *messageString = [NSString stringWithUTF8String:message];
+    dispatch_async(dispatch_get_main_queue(), ^(void) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:titleString];
+        [alert setInformativeText:messageString];
+        [alert runModal];
+    });
+}

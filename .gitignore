@@ -13,3 +13,4 @@ BO3MacFixLauncher
 *.dll
 *.clump
 *.bin
+tests/test_vdf
