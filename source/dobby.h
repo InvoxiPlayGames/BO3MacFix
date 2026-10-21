@@ -151,4 +151,13 @@ void dobby_set_options(bool enable_near_trampoline, dobby_alloc_near_code_callba
 }
 #endif
 
+// BO3MacFix: hooks and code patches go through prepatch.c, which doesn't write the game's code when the game runs
+// from the pre-patched executable
+#ifndef PREPATCH_IMPL
+int BO3MacFix_Hook(void *address, void *fake_func, void **out_origin_func);
+int BO3MacFix_CodePatch(void *address, uint8_t *buffer, uint32_t buffer_size);
+#define DobbyHook BO3MacFix_Hook
+#define DobbyCodePatch BO3MacFix_CodePatch
+#endif
+
 #endif

@@ -13,3 +13,5 @@ BO3MacFixLauncher
 *.dll
 *.clump
 *.bin
+source/t7overcharged_lua.h
+tests/test_stream_stall_recovery

@@ -1,3 +1,5 @@
+// Modified by Mickael DE LA ROQUE on 2026-09-08 to add the unofficial
+// custom-map stream-stall workaround.
 #include <_stdio.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -5,7 +7,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <ctype.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include "dyld-interposing.h"
@@ -20,10 +24,18 @@
 
 #include "bo3macnative.h"
 #include "codhavoktypes.h"
+#include "cpu_tuning.h"
 #include "dobby.h"
+#include "gpu_tweaks.h"
+#include "havok.h"
 #include "utilities.h"
 #include "offsets.h"
+#include "prepatch.h"
 #include "steam.h"
+#include "stream_stall_recovery.h"
+#include "t7overcharged.h"
+#include "controllers.h"
+#include "gc_bridge.h"
 
 #include "versioninfo.h"
 
@@ -127,10 +139,49 @@ install_hook_name(LobbyMsgRW_PrepWriteMsg, bool, void *lobbyMsg, uint8_t *data, 
     return orig;
 }
 
+// the parts of Direct3D 11 that Aspyr's Metal backend implements, which we need to make textures
+typedef struct _D3D11_TEXTURE2D_DESC {
+    uint32_t Width, Height, MipLevels, ArraySize, Format, SampleCount, SampleQuality, Usage, BindFlags, CPUAccessFlags, MiscFlags;
+} D3D11_TEXTURE2D_DESC;
+typedef struct _D3D11_SUBRESOURCE_DATA {
+    const void *pSysMem;
+    uint32_t SysMemPitch, SysMemSlicePitch;
+} D3D11_SUBRESOURCE_DATA;
+typedef struct _D3D11_SHADER_RESOURCE_VIEW_DESC {
+    uint32_t Format, ViewDimension, MostDetailedMip, MipLevels;
+    uint64_t unused;
+} D3D11_SHADER_RESOURCE_VIEW_DESC;
+#define DXGI_FORMAT_R8G8B8A8_UNORM 28
+#define D3D11_BIND_SHADER_RESOURCE 8
+#define D3D11_SRV_DIMENSION_TEXTURE2D 4
+#define COM_METHOD(obj, index, type) ((type)((*(void ***)(obj))[index]))
+static void (*R_TrackTextureMemory)(void *view, D3D11_TEXTURE2D_DESC *desc, int category);
+
 // Aspyr's png to texture conversion code is buggy and always crashes.
-// Return no texture so we don't crash upon load.
+// Decode workshop images with ImageIO and make an RGBA texture from them ourselves instead.
 install_hook_name(load_workshop_texture, void *, const char *path) {
-    return NULL;
+    uint32_t width, height;
+    uint8_t *pixels = decode_image_rgba(path, &width, &height);
+    if (pixels == NULL)
+        return NULL;
+    void *device = *(void **)(game_base_address + ADDR_g_d3d11Device);
+    D3D11_TEXTURE2D_DESC desc = { width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, 1, 0, 0, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+    D3D11_SUBRESOURCE_DATA data = { pixels, width * 4, width * 4 * height };
+    void *texture = NULL;
+    void *view = NULL;
+    if (device != NULL &&
+        COM_METHOD(device, 5, int (*)(void *, D3D11_TEXTURE2D_DESC *, D3D11_SUBRESOURCE_DATA *, void **))(device, &desc, &data, &texture) >= 0 &&
+        texture != NULL) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC view_desc = { DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_SRV_DIMENSION_TEXTURE2D, 0, 0xFFFFFFFF, 0 };
+        if (COM_METHOD(device, 7, int (*)(void *, void *, D3D11_SHADER_RESOURCE_VIEW_DESC *, void **))(device, texture, &view_desc, &view) < 0)
+            view = NULL;
+        if (view != NULL)
+            R_TrackTextureMemory(view, &desc, 0);
+        COM_METHOD(texture, 2, unsigned long (*)(void *))(texture);
+    }
+    free(pixels);
+    printf("workshop image %s (%ux%u): %s\n", path, width, height, view != NULL ? "loaded" : "failed to create texture");
+    return view;
 }
 
 // Prints out logs to stdout that would normally go in the logging window
@@ -211,6 +262,158 @@ install_hook_name(dwInstantDispatchMessage, bool, uint64_t userId, int controlle
     return orig_dwInstantDispatchMessage(userId, controllerIndex, data, datalen);
 }
 
+#define CLIENT_CONNECTION_STRIDE 0x1078
+#define CLIENT_CONNECTION_STATE_OFFSET 0x8
+#define LOCAL_CLIENT_STRIDE 0x197a40
+#define CLIENT_GLOBAL_STRIDE 0x25780
+#define SNAPSHOT_FLAGS_OFFSET 0x94
+#define SNAPSHOT_TIME_OFFSET 0x98
+#define NEW_SNAPSHOTS_OFFSET 0xb680
+#define STREAM_READY_OFFSET 0x2454d
+#define CONNECTION_STATE_PRIMED 10
+
+static atomic_bool stream_recovery_eligible;
+static StreamRecoveryLifecycle stream_recovery_lifecycle =
+    STREAM_RECOVERY_LIFECYCLE_INITIALIZER;
+static StreamStallMonitor stream_stall_monitor = {0};
+
+static bool monotonic_milliseconds(uint64_t *milliseconds) {
+    struct timespec timestamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0)
+        return false;
+
+    *milliseconds = (uint64_t)timestamp.tv_sec * 1000ULL +
+        (uint64_t)timestamp.tv_nsec / 1000000ULL;
+    return true;
+}
+
+static bool db_load_stages_complete(void) {
+    int stage_count = *(int *)(game_base_address + ADDR_DB_LOAD_STAGE_COUNT);
+    if (stage_count < 1 || stage_count > 4)
+        return false;
+
+    int *totals = (int *)(game_base_address + ADDR_DB_LOAD_TOTALS);
+    int *completed = (int *)(game_base_address + ADDR_DB_LOAD_COMPLETED);
+    bool saw_work = false;
+
+    for (int i = 0; i < stage_count; ++i) {
+        if (totals[i] > 0)
+            saw_work = true;
+        if (completed[i] < totals[i])
+            return false;
+    }
+
+    return saw_work;
+}
+
+static void begin_stream_recovery_load(bool eligible) {
+    atomic_store(&stream_recovery_eligible, eligible);
+    stream_recovery_begin_load(&stream_recovery_lifecycle);
+}
+
+install_hook_name(DB_GetStreamFraction, float, void) {
+    float fraction = orig_DB_GetStreamFraction();
+    if (stream_recovery_is_complete(&stream_recovery_lifecycle))
+        return 1.0f;
+    return fraction;
+}
+
+static void reset_stream_stall_observation(void) {
+    if (stream_stall_monitor.observing)
+        stream_stall_recovery_reset(&stream_stall_monitor);
+}
+
+static void update_stream_stall_recovery(int localClientNum) {
+    static unsigned int observed_generation = 0;
+    unsigned int generation = stream_recovery_current_generation(
+        &stream_recovery_lifecycle);
+    if (observed_generation != generation) {
+        stream_stall_recovery_reset(&stream_stall_monitor);
+        observed_generation = generation;
+    }
+
+    if (!atomic_load(&stream_recovery_eligible) ||
+        stream_recovery_is_complete(&stream_recovery_lifecycle))
+        return;
+
+    // Stream completion is global. Only the primary client owns its timer.
+    if (localClientNum != 0)
+        return;
+
+    int local_client_count = *(int *)(game_base_address + ADDR_LOCAL_CLIENT_COUNT);
+    if (localClientNum < 0 || localClientNum >= local_client_count) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *connection = (uint8_t *)(game_base_address +
+        ADDR_CLIENT_CONNECTIONS +
+        ((size_t)localClientNum * CLIENT_CONNECTION_STRIDE));
+    if (*(int *)(connection + CLIENT_CONNECTION_STATE_OFFSET) !=
+        CONNECTION_STATE_PRIMED) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *local_clients = *(uint8_t **)(
+        game_base_address + ADDR_LOCAL_CLIENTS);
+    uint8_t *client_globals = *(uint8_t **)(
+        game_base_address + ADDR_CLIENT_GLOBALS);
+    if (local_clients == NULL || client_globals == NULL) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint8_t *local_client = local_clients +
+        ((size_t)localClientNum * LOCAL_CLIENT_STRIDE);
+    uint8_t *globals = client_globals +
+        ((size_t)localClientNum * CLIENT_GLOBAL_STRIDE);
+    uint8_t snapshot_flags = *(uint8_t *)(
+        local_client + SNAPSHOT_FLAGS_OFFSET);
+    bool valid_snapshot =
+        *(int *)(local_client + NEW_SNAPSHOTS_OFFSET) != 0 &&
+        *(int *)(local_client + SNAPSHOT_TIME_OFFSET) > 0 &&
+        (snapshot_flags & 0x02) == 0;
+
+    if (!valid_snapshot ||
+        *(uint8_t *)(globals + STREAM_READY_OFFSET) != 0 ||
+        !db_load_stages_complete()) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    uint64_t now_ms;
+    if (!monotonic_milliseconds(&now_ms)) {
+        reset_stream_stall_observation();
+        return;
+    }
+
+    StreamStallInput input = {
+        .eligible_custom_map = true,
+        .connection_primed = true,
+        .valid_snapshot = true,
+        .db_load_complete = true,
+        .engine_ready = false,
+        .stream_fraction = orig_DB_GetStreamFraction(),
+        .now_ms = now_ms,
+    };
+
+    if (stream_stall_recovery_update(&stream_stall_monitor, &input) &&
+        stream_recovery_try_complete(
+            &stream_recovery_lifecycle,
+            generation)) {
+        printf("BO3MacFix: stream loading for a custom map stalled "
+               "at %.6f for %llu ms; treating it as complete.\n",
+               input.stream_fraction,
+               STREAM_STALL_TIMEOUT_MS);
+    }
+}
+
+install_hook_name(CL_SetCGameTime, void, int localClientNum) {
+    update_stream_stall_recovery(localClientNum);
+    orig_CL_SetCGameTime(localClientNum);
+}
+
 // Initialises the navmesh and navvolume for the map.
 // If we haven't made conversions already, call our conversion tool's binary.
 #define C2M_Path Macfix_Path "/cod2map/cod2map64.exe"
@@ -221,10 +424,15 @@ install_hook_name(HKAI_InitMapData, void, const char *mapname, char restart) {
     char physicsAltPath[0x200];
     snprintf(physicsPath, sizeof(physicsPath), "Physics/%s_navmesh.hkt", mapname);
     snprintf(physicsAltPath, sizeof(physicsAltPath), Macfix_Path "/Physics/%s_navmesh.hkt", mapname);
+    bool native_physics_missing = access(physicsPath, F_OK) != 0;
+
+    // Missing native physics identifies maps whose Windows assets BO3MacFix
+    // converts at runtime. Limit stream-stall recovery to those custom maps.
+    begin_stream_recovery_load(native_physics_missing);
 
     // bees are broken on Demon Within - don't trust the original navmesh/navvolume
     bool shouldFixBees = strcmp(mapname, "cp_mi_cairo_infection2") == 0;
-    if ((access(physicsPath, F_OK) != 0 || (access(physicsPath, F_OK) == 0 && shouldFixBees))
+    if ((native_physics_missing || shouldFixBees)
         && access(physicsAltPath, F_OK) != 0) {
         if (get_wine_path() == NULL)
             Com_Error(__FILE__, __LINE__, 2, Error_Prefix "You do not have Wine installed, so we can't convert the map '^2%s^7'.", mapname);
@@ -314,13 +522,7 @@ static void network_version_patch() {
     uint16_t original_network_version = 18530;
     uint16_t patched_network_version = 18532;
     // all the places the original network version is hardcoded
-    uint32_t netver_addresses[] = {
-        0x00E078E4, 0x00E181D3, 0x00E83E4E, 0x00EB8389, 0x00EB91A9,
-        0x00F988A0, 0x0104E0CB, 0x0105973D, 0x01059844, 0x0105C368,
-        0x0105C5DC, 0x011F7C3E, 0x011F7C43, 0x011F7C49, 0x0120B547,
-        0x0120B56A, 0x0123244C, 0x0126F78C, 0x0126F897, 0x0126F8BC,
-        0x0126F90D, 0x0126F96F, 0x012D35DA, 0x013B5C1D, 
-    };
+    uint32_t netver_addresses[] = { ADDRS_NetworkVersion };
     int num_netver_addrs = sizeof(netver_addresses) / sizeof(netver_addresses[0]);
     // enumerate through every one of these instances
     for (int i = 0; i < num_netver_addrs; i++) {
@@ -328,7 +530,7 @@ static void network_version_patch() {
         int o = 0;
         bool found = false;
         for (o = 0; o < 16; o++)  {
-            if (memcmp((void *)(game_base_address + netver_addresses[i] + o), &original_network_version, sizeof(uint16_t)) == 0) {
+            if (memcmp(prepatch_original_code((void *)(game_base_address + netver_addresses[i] + o), sizeof(uint16_t)), &original_network_version, sizeof(uint16_t)) == 0) {
                 found = true;
                 break;
             }
@@ -342,17 +544,14 @@ static void network_version_patch() {
     // patch the tu version used to get the ffotd
     uint8_t original_tuver[] = "tu30";
     uint8_t patched_tuver[] = "tu32";
-    uint32_t tuver_addresses[] = {
-        0x016AA513, 0x017251FB, 0x01725209, 0x0172529C, 0x017252AB,
-        0x017252B7, 
-    };
+    uint32_t tuver_addresses[] = { ADDRS_TUVersion };
     int num_tuver_addrs = sizeof(tuver_addresses) / sizeof(tuver_addresses[0]);
     // enumerate through every one of these instances
     for (int i = 0; i < num_tuver_addrs; i++) {
         int o = 0;
         bool found = false;
         for (o = 0; o < 16; o++)  {
-            if (memcmp((void *)(game_base_address + tuver_addresses[i] + o), original_tuver, sizeof(original_tuver) - 1) == 0) {
+            if (memcmp(prepatch_original_code((void *)(game_base_address + tuver_addresses[i] + o), sizeof(original_tuver) - 1), original_tuver, sizeof(original_tuver) - 1) == 0) {
                 found = true;
                 break;
             }
@@ -374,6 +573,73 @@ static void network_version_patch() {
     int new_cl_version = 0xD3FC12;
     DobbyCodePatch((void *)(game_base_address + ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall), &mov_eax, sizeof(uint8_t));
     DobbyCodePatch((void *)(game_base_address + ADDR_LobbyHostMsg_SendJoinRequest_GetChangelistCall + 1), (uint8_t *)&new_cl_version, sizeof(int));
+}
+
+// replaces the code at address with patch, only if it's still the code we expect
+static void checked_code_patch(uint32_t address, const uint8_t *expected, uint8_t *patch, uint32_t size) {
+    if (memcmp(prepatch_original_code((void *)(game_base_address + address), size), expected, size) == 0)
+        DobbyCodePatch((void *)(game_base_address + address), patch, size);
+    else
+        printf("unexpected code at %08x, not patching\n", address);
+}
+
+// Aspyr's display layer only offers resolutions up to the desktop's size in points, which on a Retina
+// screen is half its real resolution (1728x1117 on a 3456x2234 MacBook Pro), so allow the larger ones too
+static void display_mode_patch() {
+    static const uint8_t jg_width_short[] = { 0x7F, 0xDF };
+    static const uint8_t jg_height_short[] = { 0x7F, 0xDA };
+    static const uint8_t jg_width_near[] = { 0x0F, 0x8F, 0x18, 0x01, 0x00, 0x00 };
+    static const uint8_t jg_height_near[] = { 0x0F, 0x8F, 0x0F, 0x01, 0x00, 0x00 };
+    uint8_t nop2[] = { 0x66, 0x90 };
+    uint8_t nop6[] = { 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
+    checked_code_patch(ADDR_ASL_BuildModeTable_WidthCap, jg_width_short, nop2, sizeof(nop2));
+    checked_code_patch(ADDR_ASL_BuildModeTable_HeightCap, jg_height_short, nop2, sizeof(nop2));
+    checked_code_patch(ADDR_ASL_DXGIOutput_GetModes_WidthCap, jg_width_near, nop6, sizeof(nop6));
+    checked_code_patch(ADDR_ASL_DXGIOutput_GetModes_HeightCap, jg_height_near, nop6, sizeof(nop6));
+}
+
+// reads a number from a "Name = value" line in BO3MacFix/settings.ini, or returns fallback
+#define Settings_Path Macfix_Path "/settings.ini"
+static int read_setting(const char *name, int fallback, int base) {
+    FILE *fp = fopen(Settings_Path, "r");
+    if (fp == NULL)
+        return fallback;
+    int value = fallback;
+    size_t name_len = strlen(name);
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *p = line + strspn(line, " \t");
+        if (strncmp(p, name, name_len) != 0)
+            continue;
+        p += name_len;
+        p += strspn(p, " \t");
+        if (*p != '=')
+            continue;
+        p++;
+        p += strspn(p, " \t\"");
+        if (base == 16 && *p == '#')
+            p++;
+        value = (int)strtol(p, NULL, base);
+    }
+    fclose(fp);
+    return value;
+}
+
+static int read_int_setting(const char *name, int fallback) {
+    return read_setting(name, fallback, 10);
+}
+
+// for colours like LightbarColor = 0040FF
+static int read_hex_setting(const char *name, int fallback) {
+    return read_setting(name, fallback, 16);
+}
+
+// the job system's worker thread count comes from a dvar that allows 2 to 4, which the Mac version leaves at 2
+static void job_threads_patch(int threads) {
+    static const uint8_t mov_edx_2[] = { 0xBA, 0x02, 0x00, 0x00, 0x00 };
+    uint8_t mov_edx_threads[] = { 0xBA, (uint8_t)threads, 0x00, 0x00, 0x00 };
+    checked_code_patch(ADDR_JobThreadsDvar_DefaultInstr, mov_edx_2, mov_edx_threads, sizeof(mov_edx_threads));
+    printf("using %i job threads\n", threads);
 }
 
 void set_network_password(const char *password)
@@ -424,7 +690,7 @@ CFTypeRef IOHIDDeviceGetProperty_hook(IOHIDDeviceRef device, CFStringRef key)
             }
         }
     }
-    return orig;
+    return controllers_hid_property(device, key, orig);
 }
 DYLD_INTERPOSE(IOHIDDeviceGetProperty_hook, IOHIDDeviceGetProperty);
 
@@ -563,6 +829,13 @@ install_hook_name(hks_load_dll, bool, void *s, const char *filename, const char 
         }
     }
 
+    // T7Overcharged (used by mods such as All-around Enhancement) only comes as a Windows DLL, so use our own version of it
+    if (t7o_is_overcharged_dll(newpath) && strcmp(func_name, "init") == 0) {
+        printf("--> BO3MacFix T7Overcharged\n");
+        t7o_push_init(s, newpath);
+        return true;
+    }
+
     // display an alert message (that makes sense) to the user informing them that the DLL load has failed
     if (!is_macos_dylib(newpath) && !shown_dll_warning) {
         printf("which isn't a macOS dylib, erroring...\n");
@@ -589,6 +862,30 @@ install_hook_name(Com_GetBuildIntField, int, int field) {
         return 0x00000102; // 0x0102 for 1.2
     }
     return orig_Com_GetBuildIntField(field);
+}
+
+// Lua sees the build info of the current Windows version, since some workshop mods
+// (e.g. All-around Enhancement) quit the game on any other build
+#define BUILD_INTFIELD_CHANGELIST 1
+#define BUILD_STRINGFIELD_BUILD_TIME 6
+#define PC_BUILD_CHANGELIST 13892626
+#define PC_BUILD_TIME "Wed Dec 10 17:10:46 2025"
+install_hook_name(Lua_GetBuildIntField, int, lua_State *s) {
+    float field;
+    if (hks_number_arg(s, 1, &field) && (int)field == BUILD_INTFIELD_CHANGELIST) {
+        hks_push_number(s, PC_BUILD_CHANGELIST);
+        return 1;
+    }
+    return orig_Lua_GetBuildIntField(s);
+}
+
+install_hook_name(Lua_GetBuildStringField, int, lua_State *s) {
+    float field;
+    if (hks_number_arg(s, 1, &field) && (int)field == BUILD_STRINGFIELD_BUILD_TIME) {
+        hks_push_string(s, PC_BUILD_TIME);
+        return 1;
+    }
+    return orig_Lua_GetBuildStringField(s);
 }
 
 static int (*SDL_PrivateGameControllerAddMapping)(const char *mappingString, int priority);
@@ -623,11 +920,30 @@ __attribute__((constructor)) static void dylib_main() {
     // don't want to inject into defaults, Aspyr launcher or Steamwebhelper
     const char *image_path = _dyld_get_image_name(0);
     const char *image_name = filename_from_path(image_path);
-    if (strcmp(image_name, "CoDBlkOps3_Exe") != 0)
+    if (strcmp(image_name, "CoDBlkOps3_Exe") != 0 && strcmp(image_name, Prepatched_Exe_Name) != 0)
         return;
+
+    // started from Steam our log goes nowhere, so keep it in BO3MacFix/log.txt (replaced every launch)
+    struct stat out_stat;
+    if (!isatty(STDOUT_FILENO) && (fstat(STDOUT_FILENO, &out_stat) != 0 || !S_ISREG(out_stat.st_mode))) {
+        if (freopen(Macfix_Path "/log.txt", "w", stdout) != NULL) {
+            setvbuf(stdout, NULL, _IOLBF, 0);
+            dup2(fileno(stdout), STDERR_FILENO);
+        }
+    }
 
     // get the base address of the binary
     game_base_address = get_base_address();
+    prepatch_init(game_base_address);
+
+    // test switch: leave the game's code exactly as shipped (no hooks, no byte patches), to measure whether
+    // patching code in memory makes Rosetta run the game through its JIT instead of its ahead-of-time translation.
+    // The game then runs stock: no AAE, map loading fix, previews, native resolutions, controllers or CPU/GPU tweaks.
+    // Only the data-only DYLD_INTERPOSE replacements stay active.
+    if (read_int_setting("NoCodePatches", 0) != 0 || getenv("BO3MACFIX_NOCODEPATCHES") != NULL) {
+        printf("BO3MacFix: NoCodePatches is on, not changing any game code\n");
+        return;
+    }
 
     // apply the hooks
     install_hook_HKAI_InitMapData((void *)(game_base_address + ADDR_HKAI_InitMapData));
@@ -646,10 +962,16 @@ __attribute__((constructor)) static void dylib_main() {
     install_hook_hks_load_dll((void *)(game_base_address + ADDR_hks_load_dll));
     install_hook_hksf_fopen_internal((void *)(game_base_address + ADDR_hksf_fopen_internal));
     install_hook_CL_FirstSnapshot((void *)(game_base_address + ADDR_CL_FirstSnapshot));
+    install_hook_DB_GetStreamFraction((void *)(game_base_address + ADDR_DB_GetStreamFraction));
+    install_hook_CL_SetCGameTime((void *)(game_base_address + ADDR_CL_SetCGameTime));
     install_hook_Com_GetBuildIntField((void *)(game_base_address + ADDR_Com_GetBuildIntField));
+    install_hook_Lua_GetBuildIntField((void *)(game_base_address + ADDR_Lua_GetBuildIntField));
+    install_hook_Lua_GetBuildStringField((void *)(game_base_address + ADDR_Lua_GetBuildStringField));
     //install_hook_SDL_GameControllerInitMappings((void *)(game_base_address + ADDR_SDL_GameControllerInitMappings));
 
     // set up functions that we later call
+    havok_init(game_base_address);
+    R_TrackTextureMemory = (void *)(game_base_address + ADDR_R_TrackTextureMemory);
     build_usermods_path = (void *)(game_base_address + ADDR_build_usermods_path);
     DB_FindXAssetHeader = (void *)(game_base_address + ADDR_DB_FindXAssetHeader);
     Com_Error = (void *)(game_base_address + ADDR_Com_Error);
@@ -699,8 +1021,39 @@ __attribute__((constructor)) static void dylib_main() {
     // patches the network version to match Windows
     network_version_patch();
 
+    // lets the game use native Retina resolutions
+    display_mode_patch();
+
+    // use more job worker threads if specified in settings.ini or at env (2 to 4)
+    int job_threads = read_int_setting("JobThreads", 2);
+    const char *job_threads_env = getenv("BO3MACFIX_JOBTHREADS");
+    if (job_threads_env != NULL)
+        job_threads = atoi(job_threads_env);
+    if (job_threads >= 3 && job_threads <= 4)
+        job_threads_patch(job_threads);
+
+    // DualSense/DualShock 4 through macOS's GameController framework (Bluetooth, rumble, lightbar), see gc_bridge.m.
+    // Before controllers_init, which then leaves PlayStation controllers to it.
+    gc_bridge_init(game_base_address, read_int_setting("ControllerBridge", 0), read_hex_setting("LightbarColor", -1));
+
+    // DualSense/DualShock 4 mappings for SDL, and PlayStation button prompts (0 = auto, 1 = Xbox, 2 = PlayStation)
+    controllers_init(game_base_address, read_int_setting("ControllerMappings", 1), read_int_setting("ButtonPrompts", 0));
+
+    // thread QoS and job worker waiting fixes (see cpu_tuning.c), each can be turned off in settings.ini
+    cpu_tuning_init(game_base_address, read_int_setting("ThreadQoS", 1), read_int_setting("JobIdleFix", 1),
+                    read_int_setting("YieldSleep0", 0));
+
+    // Metal frame queue depth and present pacing from settings.ini or at env, see gpu_tweaks.c
+    gpu_tweaks_init(read_int_setting("FramesInFlight", 2), read_int_setting("FramePacingFPS", 0), checked_code_patch);
+
+    // MetalFX upscaling when the game runs below the screen's resolution (MetalFXUpscale, 0 = off), see metalfx.m
+    gpu_tweaks_metalfx_init(read_int_setting("MetalFXUpscale", 0), checked_code_patch);
+
     // pre-fetch the wine path so we don't need to search earlier
     get_wine_path();
+
+    // running from the pre-patched executable, say what was set up and whether any game code was written
+    prepatch_report();
 
     // i'll figure all that stuff out later :')
     //int sbr = sandbox_init_with_parameters("(version 1)(allow default)(debug allow)", 0, NULL, NULL);

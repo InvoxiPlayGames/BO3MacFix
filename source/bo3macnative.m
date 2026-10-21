@@ -1,5 +1,6 @@
 #include <Foundation/Foundation.h>
 #include <AppKit/AppKit.h>
+#include <ImageIO/ImageIO.h>
 #include <dispatch/dispatch.h>
 #include <string.h>
 #include <unistd.h>
@@ -56,6 +57,65 @@ void set_window_title(const char *new_title) {
             [NSApplication sharedApplication].appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         }
     });
+}
+
+// decodes an image file into 8-bit RGBA pixels (straight alpha), which the caller frees, or returns NULL
+uint8_t *decode_image_rgba(const char *path, uint32_t *width, uint32_t *height) {
+    @autoreleasepool {
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, strlen(path), false);
+        if (url == NULL)
+            return NULL;
+        CGImageSourceRef source = CGImageSourceCreateWithURL(url, NULL);
+        CFRelease(url);
+        if (source == NULL)
+            return NULL;
+        CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+        CFRelease(source);
+        if (image == NULL)
+            return NULL;
+        size_t w = CGImageGetWidth(image);
+        size_t h = CGImageGetHeight(image);
+        uint8_t *pixels = (w > 0 && h > 0 && w <= 16384 && h <= 16384) ? calloc(w * h, 4) : NULL;
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef context = pixels != NULL ? CGBitmapContextCreate(pixels, w, h, 8, w * 4, colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big) : NULL;
+        CGColorSpaceRelease(colorSpace);
+        if (context == NULL) {
+            free(pixels);
+            CGImageRelease(image);
+            return NULL;
+        }
+        CGContextDrawImage(context, CGRectMake(0, 0, w, h), image);
+        CGContextRelease(context);
+        CGImageRelease(image);
+        // CoreGraphics only draws premultiplied alpha, undo it for any translucent pixels
+        for (size_t i = 0; i < w * h * 4; i += 4) {
+            uint8_t a = pixels[i + 3];
+            if (a != 0 && a != 255) {
+                pixels[i] = (uint8_t)((pixels[i] * 255 + a / 2) / a);
+                pixels[i + 1] = (uint8_t)((pixels[i + 1] * 255 + a / 2) / a);
+                pixels[i + 2] = (uint8_t)((pixels[i + 2] * 255 + a / 2) / a);
+            }
+        }
+        *width = (uint32_t)w;
+        *height = (uint32_t)h;
+        return pixels;
+    }
+}
+
+// returns a copy of the clipboard's text, which the caller frees, or NULL if there isn't any
+char *copy_clipboard_text() {
+    @autoreleasepool {
+        NSString *text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        return (text != nil && [text UTF8String] != NULL) ? strdup([text UTF8String]) : NULL;
+    }
+}
+
+void set_clipboard_text(const char *text) {
+    @autoreleasepool {
+        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+        [pasteboard clearContents];
+        [pasteboard setString:[NSString stringWithUTF8String:text] forType:NSPasteboardTypeString];
+    }
 }
 
 void add_menu_bar() {
